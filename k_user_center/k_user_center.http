@@ -1,0 +1,6 @@
+@k_user_center_HostAddress = http://localhost:5224
+
+GET {{k_user_center_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
