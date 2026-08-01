@@ -1,279 +1,223 @@
 -- =============================================================================
 -- 000_bootstrap.sql
--- 迁移台账、公共 schema、通用函数与触发器、数据库角色
--- 依据：蓝图 §11.0 技术基线、§4.3 安全版本、§18.1 数据库契约测试
--- 目标：PostgreSQL 16+
--- 幂等：全部 DDL 为 IF NOT EXISTS / OR REPLACE，可重复执行
--- 回滚：见 rollback/999_rollback_all.sql
+-- PostgreSQL 基线、Schema、安全函数与迁移台账
+-- 目标：PostgreSQL 16+；应用：.NET 10 + SqlSugar
 -- =============================================================================
 
-SET client_min_messages = warning;
+BEGIN;
 
--- -----------------------------------------------------------------------------
--- 0. 扩展
--- -----------------------------------------------------------------------------
--- gen_random_uuid() 为 PG13+ 内置，不需要 pgcrypto。
--- 本库不安装任何依赖密钥的加密扩展：加解密与 HMAC 一律在应用侧用 KMS 密钥完成（REQ-KEY-001）。
-CREATE EXTENSION IF NOT EXISTS btree_gin;
+SET LOCAL lock_timeout = '10s';
+SET LOCAL statement_timeout = '5min';
+SET LOCAL client_min_messages = warning;
 
--- -----------------------------------------------------------------------------
--- 1. 公共 schema
--- -----------------------------------------------------------------------------
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 CREATE SCHEMA IF NOT EXISTS core;
-COMMENT ON SCHEMA core IS '公共基础设施：迁移台账、通用函数、标识台账、幂等记录、参考数据';
+CREATE SCHEMA IF NOT EXISTS iam;
+CREATE SCHEMA IF NOT EXISTS authn;
+CREATE SCHEMA IF NOT EXISTS oauth;
+CREATE SCHEMA IF NOT EXISTS org;
+CREATE SCHEMA IF NOT EXISTS authz;
+CREATE SCHEMA IF NOT EXISTS profile;
+CREATE SCHEMA IF NOT EXISTS privacy;
+CREATE SCHEMA IF NOT EXISTS federation;
+CREATE SCHEMA IF NOT EXISTS risk;
+CREATE SCHEMA IF NOT EXISTS workload;
+CREATE SCHEMA IF NOT EXISTS assurance;
+CREATE SCHEMA IF NOT EXISTS crypto;
+CREATE SCHEMA IF NOT EXISTS control;
+CREATE SCHEMA IF NOT EXISTS integration;
+CREATE SCHEMA IF NOT EXISTS audit;
+CREATE SCHEMA IF NOT EXISTS messaging;
+CREATE SCHEMA IF NOT EXISTS migration;
 
--- -----------------------------------------------------------------------------
--- 2. 迁移台账
--- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS core.schema_migration (
-    version           text        NOT NULL,
-    description       text        NOT NULL,
-    first_applied_at  timestamptz NOT NULL DEFAULT now(),
-    last_applied_at   timestamptz NOT NULL DEFAULT now(),
-    apply_count       integer     NOT NULL DEFAULT 1,
-    applied_by        text        NOT NULL DEFAULT current_user,
-    CONSTRAINT pk_schema_migration PRIMARY KEY (version)
+COMMENT ON SCHEMA core IS '平台公共契约：迁移、幂等、Operation、参考数据与数据库辅助函数。';
+COMMENT ON SCHEMA iam IS '身份主体与标识域：Global User、pairwise Subject、Identifier、账号合并与注销。';
+COMMENT ON SCHEMA authn IS '认证域：认证器、密码、Challenge、Login Transaction、设备授权与保证等级证据。';
+COMMENT ON SCHEMA oauth IS 'OAuth/OIDC 会话与授权域：Client、Resource、Grant、Session、Token、撤销与退出。';
+COMMENT ON SCHEMA org IS '业务线、租户、组织、Membership、Invitation、用户组与计量。';
+COMMENT ON SCHEMA authz IS '授权域：权限、角色、策略、义务、PEP 能力与决策证据。';
+COMMENT ON SCHEMA profile IS '用户资料与身份核验断言域。';
+COMMENT ON SCHEMA privacy IS '用途、Consent、协议、个人权利请求、保留与导出。';
+COMMENT ON SCHEMA federation IS 'OIDC/SAML 联合、外部身份、属性映射与目录同步。';
+COMMENT ON SCHEMA risk IS '风险信号、评估、处置、案件、拒绝名单与策略版本。';
+COMMENT ON SCHEMA workload IS 'Client 之外的机器主体、工作负载证明、机器凭证与 Token Exchange。';
+COMMENT ON SCHEMA assurance IS 'IAL/AAL/FAL、敏感操作要求、高保证恢复与自然人委托。';
+COMMENT ON SCHEMA crypto IS '密钥、证书与 JWKS 发布台账；不保存私钥明文。';
+COMMENT ON SCHEMA control IS '配置发布、高风险审批、安全例外、Break-glass 与复核。';
+COMMENT ON SCHEMA integration IS '事件 Schema、Outbox、Webhook、投递、回放与消费方水位。';
+COMMENT ON SCHEMA audit IS '不可篡改审计、数据访问审计与封存证明。';
+COMMENT ON SCHEMA messaging IS '短信、邮件、Push 等消息供应商、模板、发送、回执与可达性。';
+COMMENT ON SCHEMA migration IS '旧系统迁移批次、ID 映射、重复候选、变更日志与对账。';
+
+CREATE TABLE core.schema_migration (
+    version             text        NOT NULL,
+    description         text        NOT NULL,
+    script_sha256       text        NULL,
+    applied_at          timestamptz NOT NULL DEFAULT clock_timestamp(),
+    applied_by          text        NOT NULL DEFAULT current_user,
+    application_name    text        NULL DEFAULT current_setting('application_name', true),
+    CONSTRAINT pk_schema_migration PRIMARY KEY (version),
+    CONSTRAINT ck_schema_migration_sha256 CHECK (script_sha256 IS NULL OR script_sha256 ~ '^[0-9a-f]{64}$')
 );
-COMMENT ON TABLE core.schema_migration IS '迁移版本台账，支撑蓝图 §18.2 第 4 条“数据库迁移不可回滚且未经过演练”的可追溯性（REQ-MIG-001）';
+COMMENT ON TABLE core.schema_migration IS 'CAP-PLT-007 / REQ-MIG-009：数据库迁移版本、内容摘要、执行时间与执行主体台账。';
 
-CREATE OR REPLACE FUNCTION core.fn_migration_apply(p_version text, p_description text)
-RETURNS void
+CREATE OR REPLACE FUNCTION core.fn_register_migration(
+    p_version text,
+    p_description text,
+    p_script_sha256 text DEFAULT NULL
+) RETURNS void
 LANGUAGE plpgsql
-AS $$
-BEGIN
-    INSERT INTO core.schema_migration (version, description)
-    VALUES (p_version, p_description)
-    ON CONFLICT (version) DO UPDATE
-        SET last_applied_at = now(),
-            apply_count     = core.schema_migration.apply_count + 1,
-            applied_by      = current_user;
-END;
-$$;
-COMMENT ON FUNCTION core.fn_migration_apply(text, text) IS '登记迁移版本；因所有 DDL 幂等，重复执行只累加 apply_count 而不报错';
-
--- -----------------------------------------------------------------------------
--- 3. 内部主键生成：UUIDv7
--- 能力地图 §3.2：内部主键允许有序 ID 以保证索引局部性，但禁止对外暴露
--- -----------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION core.uuid_generate_v7()
-RETURNS uuid
-LANGUAGE plpgsql
-PARALLEL SAFE
 AS $$
 DECLARE
-    v_time_ms bytea;
-    v_bytes   bytea;
+    v_existing core.schema_migration%ROWTYPE;
 BEGIN
-    -- 48 bit 毫秒时间戳（大端），取 int8send 的后 6 字节
-    v_time_ms := substring(int8send((extract(epoch FROM clock_timestamp()) * 1000)::bigint) FROM 3 FOR 6);
-    -- 10 字节随机：直接复用内置 CSPRNG，避免引入 pgcrypto
-    v_bytes   := v_time_ms || substring(uuid_send(gen_random_uuid()) FROM 7 FOR 10);
-    -- version = 7
-    v_bytes   := set_byte(v_bytes, 6, ((get_byte(v_bytes, 6) & 15) | 112));
-    -- variant = RFC 4122
-    v_bytes   := set_byte(v_bytes, 8, ((get_byte(v_bytes, 8) & 63) | 128));
-    RETURN encode(v_bytes, 'hex')::uuid;
+    IF p_script_sha256 IS NOT NULL AND p_script_sha256 !~ '^[0-9a-f]{64}$' THEN
+        RAISE EXCEPTION 'MIGRATION_HASH_INVALID: %', p_version USING ERRCODE = '22023';
+    END IF;
+
+    SELECT * INTO v_existing
+      FROM core.schema_migration
+     WHERE version = p_version
+     FOR UPDATE;
+
+    IF FOUND THEN
+        IF v_existing.description IS DISTINCT FROM p_description THEN
+            RAISE EXCEPTION 'MIGRATION_DESCRIPTION_DRIFT: %', p_version USING ERRCODE = '55000';
+        END IF;
+        IF v_existing.script_sha256 IS NOT NULL
+           AND p_script_sha256 IS NOT NULL
+           AND v_existing.script_sha256 <> p_script_sha256 THEN
+            RAISE EXCEPTION 'MIGRATION_CONTENT_DRIFT: %', p_version USING ERRCODE = '55000';
+        END IF;
+        IF v_existing.script_sha256 IS NULL AND p_script_sha256 IS NOT NULL THEN
+            UPDATE core.schema_migration
+               SET script_sha256 = p_script_sha256,
+                   application_name = current_setting('application_name', true)
+             WHERE version = p_version;
+        END IF;
+        RETURN;
+    END IF;
+
+    INSERT INTO core.schema_migration(version, description, script_sha256)
+    VALUES (p_version, p_description, p_script_sha256);
 END;
 $$;
-COMMENT ON FUNCTION core.uuid_generate_v7() IS 'UUIDv7 内部主键；应用侧亦可自行生成，两者必须同算法（能力地图 §3.2）';
+COMMENT ON FUNCTION core.fn_register_migration(text, text, text) IS '登记迁移并锁定版本、描述和可选 SHA-256；同版本描述或非空摘要漂移时失败。';
 
--- -----------------------------------------------------------------------------
--- 4. 通用触发器函数
--- -----------------------------------------------------------------------------
-
--- 4.1 updated_at 自动维护（不触碰 row_version，避免与 ORM 乐观锁冲突）
 CREATE OR REPLACE FUNCTION core.fn_touch_updated_at()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    NEW.updated_at := now();
+    NEW.updated_at := clock_timestamp();
     RETURN NEW;
 END;
 $$;
+COMMENT ON FUNCTION core.fn_touch_updated_at() IS '统一维护 updated_at；安全判断使用数据库可信时钟。';
 
--- 4.2 安全水位单调递增（蓝图 §4.3、SLO-DR-002：无法证明单调时失败关闭）
+CREATE OR REPLACE FUNCTION core.fn_increment_row_version()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    NEW.row_version := OLD.row_version + 1;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION core.fn_increment_row_version() IS '数据库强制将 row_version 精确递增 1；应用仍必须使用原版本做 compare-and-set。';
+
 CREATE OR REPLACE FUNCTION core.fn_forbid_epoch_decrease()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 DECLARE
-    v_col text := COALESCE(TG_ARGV[0], 'security_epoch');
+    v_column text := TG_ARGV[0];
     v_old bigint;
     v_new bigint;
 BEGIN
-    EXECUTE format('SELECT ($1).%I, ($2).%I', v_col, v_col) INTO v_old, v_new USING OLD, NEW;
+    EXECUTE format('SELECT ($1).%I, ($2).%I', v_column, v_column)
+       INTO v_old, v_new USING OLD, NEW;
     IF v_new < v_old THEN
-        RAISE EXCEPTION 'EPOCH_MONOTONICITY_VIOLATION: %.%.% % -> %',
-            TG_TABLE_SCHEMA, TG_TABLE_NAME, v_col, v_old, v_new
-            USING ERRCODE = '23514';
+        RAISE EXCEPTION '% 不得回退：% -> %', v_column, v_old, v_new USING ERRCODE = '23514';
     END IF;
     RETURN NEW;
 END;
 $$;
-COMMENT ON FUNCTION core.fn_forbid_epoch_decrease() IS 'security_epoch / policy_version 等安全水位只增不减（蓝图 §4.3）';
+COMMENT ON FUNCTION core.fn_forbid_epoch_decrease() IS '保证 user/client/tenant/consent security epoch 单调递增。';
 
--- 4.3 追加型表保护（权限是主控制，触发器为纵深防御）
 CREATE OR REPLACE FUNCTION core.fn_append_only()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    RAISE EXCEPTION 'APPEND_ONLY_VIOLATION: % 禁止在 %.% 上执行（INV-G-008）',
-        TG_OP, TG_TABLE_SCHEMA, TG_TABLE_NAME
-        USING ERRCODE = '42501';
+    RAISE EXCEPTION '% 是追加型对象，禁止 %', TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME, TG_OP
+        USING ERRCODE = '55000';
 END;
 $$;
+COMMENT ON FUNCTION core.fn_append_only() IS '阻断追加型审计、撤销、投递证据的 UPDATE/DELETE。';
 
--- 4.4 对外标识永不复用（INV-G-001）
-CREATE OR REPLACE FUNCTION core.fn_register_public_id()
+CREATE OR REPLACE FUNCTION core.fn_terminal_state_guard()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 DECLARE
-    v_entity text := TG_ARGV[0];
-    v_column text := COALESCE(TG_ARGV[1], 'public_id');
-    v_value  text;
+    v_column text := TG_ARGV[0];
+    v_old text;
+    v_new text;
+    v_terminal text[];
 BEGIN
-    EXECUTE format('SELECT ($1).%I', v_column) INTO v_value USING NEW;
-    IF v_value IS NULL THEN
-        RETURN NEW;
+    v_terminal := TG_ARGV[1:TG_NARGS - 1];
+    EXECUTE format('SELECT ($1).%I, ($2).%I', v_column, v_column)
+       INTO v_old, v_new USING OLD, NEW;
+    IF v_old = ANY(v_terminal) AND v_new IS DISTINCT FROM v_old THEN
+        RAISE EXCEPTION 'INVALID_STATE_TRANSITION: %.% 的终态 % 不得离开', TG_TABLE_NAME, v_column, v_old
+            USING ERRCODE = '23514';
     END IF;
-    -- 不使用 ON CONFLICT：冲突必须冒泡为错误，这正是"永不复用"的执行点
-    INSERT INTO core.public_id_ledger (public_id, entity_type) VALUES (v_value, v_entity);
     RETURN NEW;
 END;
 $$;
-COMMENT ON FUNCTION core.fn_register_public_id() IS '将对外标识登记进插入型台账；实体行删除不释放占用（INV-G-001）';
+COMMENT ON FUNCTION core.fn_terminal_state_guard() IS '通用终态保护触发器；参数为状态列名和终态列表。';
 
--- -----------------------------------------------------------------------------
--- 5. 月分区维护
--- 依据：本文档 §8。默认分区兜底，落入默认分区应告警而不是让写入失败
--- -----------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION core.fn_ensure_monthly_partitions(
-    p_schema        text,
-    p_table         text,
-    p_months_ahead  integer DEFAULT 3,
-    p_append_only   boolean DEFAULT false
-)
-RETURNS integer
+CREATE TABLE core.public_id_ledger (
+    public_id       text        NOT NULL,
+    entity_kind     text        NOT NULL,
+    entity_id       uuid        NOT NULL,
+    issued_at       timestamptz NOT NULL DEFAULT clock_timestamp(),
+    CONSTRAINT pk_public_id_ledger PRIMARY KEY (public_id),
+    CONSTRAINT uq_public_id_ledger_entity UNIQUE (entity_kind, entity_id),
+    CONSTRAINT ck_public_id_ledger_format CHECK (public_id ~ '^[a-z][a-z0-9]{1,11}_[A-Za-z0-9_-]{16,64}$')
+);
+COMMENT ON TABLE core.public_id_ledger IS 'INV-G-001：UID、Subject ID、Membership ID 及其他对外主体标识的永久占用台账；实体删除也不释放。';
+
+CREATE OR REPLACE FUNCTION core.fn_register_public_id()
+RETURNS trigger
 LANGUAGE plpgsql
-AS $$
-DECLARE
-    v_base    date := date_trunc('month', now())::date;
-    v_i       integer;
-    v_part    text;
-    v_from    date;
-    v_to      date;
-    v_created integer := 0;
-BEGIN
-    FOR v_i IN 0..p_months_ahead LOOP
-        v_from := (v_base + (v_i || ' month')::interval)::date;
-        v_to   := (v_base + ((v_i + 1) || ' month')::interval)::date;
-        v_part := format('%s_p%s', p_table, to_char(v_from, 'YYYYMM'));
-
-        IF NOT EXISTS (
-            SELECT 1 FROM pg_class c
-            JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE n.nspname = p_schema AND c.relname = v_part
-        ) THEN
-            EXECUTE format(
-                'CREATE TABLE %I.%I PARTITION OF %I.%I FOR VALUES FROM (%L) TO (%L)',
-                p_schema, v_part, p_schema, p_table, v_from, v_to
-            );
-            -- 分区不继承父表权限，且会命中 ALTER DEFAULT PRIVILEGES，
-            -- 因此追加型父表的新分区必须单独收回 UPDATE/DELETE（INV-G-008）
-            IF p_append_only THEN
-                PERFORM core.fn_apply_append_only_grants(p_schema, v_part);
-            END IF;
-            v_created := v_created + 1;
-        END IF;
-    END LOOP;
-    RETURN v_created;
-END;
-$$;
-
-CREATE OR REPLACE FUNCTION core.fn_ensure_default_partition(
-    p_schema      text,
-    p_table       text,
-    p_append_only boolean DEFAULT false
-)
-RETURNS void
-LANGUAGE plpgsql
-AS $$
-DECLARE
-    v_part text := format('%s_pdefault', p_table);
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_class c
-        JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = p_schema AND c.relname = v_part
-    ) THEN
-        EXECUTE format('CREATE TABLE %I.%I PARTITION OF %I.%I DEFAULT', p_schema, v_part, p_schema, p_table);
-        IF p_append_only THEN
-            PERFORM core.fn_apply_append_only_grants(p_schema, v_part);
-        END IF;
-    END IF;
-END;
-$$;
-COMMENT ON FUNCTION core.fn_ensure_default_partition(text, text, boolean) IS '默认分区兜底：宁可落入默认分区并告警，也不允许审计与风险写入失败';
-
--- -----------------------------------------------------------------------------
--- 6. 数据库角色
--- 依据：蓝图 §9.1 凭证与资料分安全域、§11.0 凭证域与审计域独立
--- 口令由部署流水线注入，迁移脚本不设置口令（CAP-KEY-002）
--- -----------------------------------------------------------------------------
-DO $$
-DECLARE
-    v_role text;
-BEGIN
-    FOREACH v_role IN ARRAY ARRAY['uc_migrator', 'uc_app', 'uc_cred_app', 'uc_audit_writer', 'uc_auditor', 'uc_readonly']
-    LOOP
-        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_role) THEN
-            EXECUTE format('CREATE ROLE %I NOLOGIN', v_role);
-        END IF;
-    END LOOP;
-END;
-$$;
-
--- 标准授权：业务域与控制面 schema 统一调用
-CREATE OR REPLACE FUNCTION core.fn_apply_standard_grants(p_schema text)
-RETURNS void
-LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, core
 AS $$
 BEGIN
-    EXECUTE format('GRANT USAGE ON SCHEMA %I TO uc_app, uc_readonly, uc_auditor', p_schema);
-    EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO uc_app', p_schema);
-    EXECUTE format('GRANT SELECT ON ALL TABLES IN SCHEMA %I TO uc_readonly, uc_auditor', p_schema);
-    EXECUTE format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA %I TO uc_app', p_schema);
-    EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO uc_app', p_schema);
-    EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT SELECT ON TABLES TO uc_readonly, uc_auditor', p_schema);
+    INSERT INTO core.public_id_ledger(public_id, entity_kind, entity_id)
+    VALUES (NEW.public_id, TG_ARGV[0], NEW.id);
+    RETURN NEW;
 END;
 $$;
+COMMENT ON FUNCTION core.fn_register_public_id() IS '在实体插入时以受限 SECURITY DEFINER 权限原子登记不可复用 public_id。';
 
--- 追加型表授权：只给 INSERT + SELECT，收回 UPDATE/DELETE/TRUNCATE（INV-G-008）
-CREATE OR REPLACE FUNCTION core.fn_apply_append_only_grants(p_schema text, p_table text, p_role text DEFAULT 'uc_app')
-RETURNS void
-LANGUAGE plpgsql
+CREATE OR REPLACE FUNCTION core.fn_hash_jsonb(p_value jsonb)
+RETURNS bytea
+LANGUAGE sql
+IMMUTABLE
+STRICT
 AS $$
-BEGIN
-    EXECUTE format('REVOKE ALL ON %I.%I FROM %I', p_schema, p_table, p_role);
-    EXECUTE format('GRANT SELECT, INSERT ON %I.%I TO %I', p_schema, p_table, p_role);
-END;
+    SELECT digest(convert_to(p_value::text, 'UTF8'), 'sha256');
 $$;
-COMMENT ON FUNCTION core.fn_apply_append_only_grants(text, text, text) IS '追加型表只授 INSERT/SELECT；这是审计不可篡改的主控制手段，触发器仅为纵深防御';
+COMMENT ON FUNCTION core.fn_hash_jsonb(jsonb) IS '对规范化 JSONB 文本计算 SHA-256；仅用于完整性与幂等摘要，不用于密码哈希。';
 
--- 凭证域收紧：仅认证服务角色可访问
-CREATE OR REPLACE FUNCTION core.fn_apply_credential_grants(p_schema text)
-RETURNS void
-LANGUAGE plpgsql
-AS $$
-BEGIN
-    EXECUTE format('REVOKE ALL ON SCHEMA %I FROM uc_app, uc_readonly, uc_auditor', p_schema);
-    EXECUTE format('GRANT USAGE ON SCHEMA %I TO uc_cred_app', p_schema);
-    EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO uc_cred_app', p_schema);
-    EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO uc_cred_app', p_schema);
-END;
-$$;
+SELECT core.fn_register_migration(
+    '000',
+    'PostgreSQL 基线、Schema、安全函数与迁移台账',
+    NULLIF(current_setting('kuc.migration_sha256', true), '')
+);
 
-SELECT core.fn_migration_apply('000', 'bootstrap：迁移台账、UUIDv7、通用触发器函数、分区维护、角色与授权助手');
+COMMIT;

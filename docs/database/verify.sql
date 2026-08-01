@@ -1,341 +1,406 @@
 -- =============================================================================
 -- verify.sql
--- 数据库契约自动化校验（CI 门禁）
--- 依据：数据库构建文档 §5 不变量映射、§7.4；蓝图 §18.1「数据库契约测试」、§18.2 发布阻断条件
--- 用法：psql "$PGURL" -v ON_ERROR_STOP=1 -f verify.sql
---       有任何违规即打印明细并以非零码退出
+-- PostgreSQL 基线结构、注释、状态机、公开 ID、敏感字段和关键不变量验收
+-- psql 建议：psql -v ON_ERROR_STOP=1 -f docs/database/verify.sql
 -- =============================================================================
 
-\set ON_ERROR_STOP on
+BEGIN;
+CREATE TEMP TABLE kuc_verification_violation (
+    check_code text NOT NULL,
+    object_name text NOT NULL,
+    detail text NOT NULL
+) ON COMMIT DROP;
 
-DROP TABLE IF EXISTS verify_violation;
-CREATE TEMP TABLE verify_violation (
-    check_id  text NOT NULL,
-    severity  text NOT NULL,
-    detail    text NOT NULL
-);
+INSERT INTO kuc_verification_violation
+SELECT 'V001_MISSING_SCHEMA', required_schema, '缺少平台 Schema'
+  FROM unnest(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration']) required_schema
+ WHERE NOT EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname = required_schema);
 
-DO $verify$
-DECLARE
-    v_schemas text[] := ARRAY[
-        'core','id','cred','auth','oap','session','tenant','authz','profile','priv',
-        'fed','risk','machine','kms','ctrl','event','obs','msg','asr','mig'
-    ];
-    -- 必须带 tenant_id NOT NULL 的租户内表（INV-G-015）
-    v_tenant_scoped text[][] := ARRAY[
-        ['tenant','membership'],['tenant','invitation'],['tenant','organization'],
-        ['tenant','user_group'],['tenant','user_group_member'],['tenant','usage_metering'],
-        ['oap','client'],['auth','login_transaction'],['session','user_session'],
-        ['session','authorization_grant'],['session','token_family'],['session','access_token_reference'],
-        ['session','revocation_record'],['authz','role'],['authz','role_assignment'],['authz','decision_log'],
-        ['profile','business_profile'],['risk','risk_signal'],['risk','risk_assessment'],['risk','risk_case'],
-        ['machine','machine_principal'],['ctrl','approval_case'],['event','outbox'],['event','webhook_endpoint'],
-        ['obs','audit_event'],['obs','data_access_audit'],['msg','message_send'],['asr','delegation'],
-        ['mig','migration_batch'],['fed','directory_sync_state']
-    ];
-    -- 追加型表：uc_app 不得拥有 UPDATE/DELETE（INV-G-008）
-    v_append_only text[][] := ARRAY[
-        ['core','public_id_ledger'],['id','identifier_tombstone'],['id','user_alias'],
-        ['profile','profile_change_log'],['priv','agreement_acceptance'],['session','revocation_record'],
-        ['machine','token_exchange_record'],['authz','decision_log'],['risk','risk_signal'],
-        ['obs','audit_event'],['obs','data_access_audit'],['obs','audit_seal'],['msg','delivery_receipt']
-    ];
-    -- 必须存在的对象（索引 / 触发器 / 约束），映射构建文档 §5
-    v_required_index text[][] := ARRAY[
-        ['V-002','id','ux_identifier_active_scope'],
-        ['V-004','fed','ux_external_identity_key'],
-        ['V-006','authz','ux_policy_release_active'],
-        ['V-011','ctrl','ux_config_release_active'],
-        ['V-014','session','ux_refresh_token_current'],
-        ['V-017','ctrl','ux_approval_case_execution'],
-        ['V-009','id','ix_global_user_lifecycle'],
-        ['V-016','obs','ux_audit_event_chain']
-    ];
-    v_required_trigger text[][] := ARRAY[
-        ['V-001','id','global_user','trg_global_user_public_id'],
-        ['V-001','tenant','membership','trg_membership_public_id'],
-        ['V-001','id','subject_assignment','trg_subject_assignment_public_id'],
-        ['V-009','id','global_user','trg_global_user_terminal_guard'],
-        ['V-013','session','user_session','trg_user_session_insert_guard'],
-        ['V-023','id','global_user','trg_global_user_epoch'],
-        ['V-023','oap','client','trg_client_epoch'],
-        ['V-023','tenant','tenant','trg_tenant_epoch'],
-        ['V-023','machine','machine_principal','trg_machine_principal_epoch'],
-        ['V-008','obs','audit_seal','trg_audit_seal_append_only']
-    ];
-    v_required_constraint text[] := ARRAY[
-        'ck_external_identity_persistent',   -- V-004 / INV-G-004
-        'ck_config_release_separation',      -- V-011 / INV-G-011
-        'ck_approval_case_separation',       -- V-017 / INV-G-017
-        'ck_policy_release_separation',      -- V-006
-        'ck_delegation_visible',             -- V-018 / CAP-ASR-011
-        'ck_delegation_scope_not_empty',     -- V-018 / INV-G-018
-        'uq_idempotency_record_key',         -- V-012 / INV-G-012
-        'ck_client_grant_types',             -- REQ-AUTH-001 禁止 ROPC/Implicit
-        'ck_client_public_no_secret',        -- REQ-MACHINE-002
-        'ck_login_transaction_completed',    -- INV-G-016
-        'ck_notification_preference_security_always_on', -- CAP-SSC-011
-        'ck_token_exchange_record_no_escalation'         -- REQ-MACHINE-008
-    ];
-    v_rec        record;
-    v_item       text[];
-    v_cnt        bigint;
+INSERT INTO kuc_verification_violation
+SELECT 'V002_MISSING_MIGRATION', required_version, '迁移版本未登记'
+  FROM unnest(ARRAY['000','010','020','030','040','050','060','070','075','080','900']) required_version
+ WHERE to_regclass('core.schema_migration') IS NULL
+    OR NOT EXISTS (SELECT 1 FROM core.schema_migration m WHERE m.version = required_version);
+
+INSERT INTO kuc_verification_violation
+SELECT 'V003_MISSING_TABLE', required_table, '能力蓝图要求的核心表不存在'
+  FROM unnest(ARRAY[
+    'iam.user_account','iam.identifier','authn.authenticator','authn.login_transaction','authn.verification_challenge',
+    'oauth.client','oauth.authorization_grant','oauth.user_session','oauth.token_family','oauth.revocation_record',
+    'org.tenant','org.membership','org.invitation','authz.authorization_decision','authz.relationship_tuple','authz.access_review','profile.field_definition','profile.notification_preference',
+    'privacy.consent_aggregate','privacy.consent','privacy.privacy_request','privacy.cross_border_authorization','privacy.minor_protection','privacy.privacy_impact_assessment','federation.external_identity','federation.directory_object',
+    'risk.risk_signal','risk.risk_assessment','workload.machine_principal','workload.workload_attestation',
+    'assurance.delegation','control.approval_case','control.config_release','control.client_certification_run','crypto.key_asset',
+    'integration.outbox_event','integration.webhook_delivery','audit.audit_event','messaging.message_send','messaging.content_compliance_rule',
+    'migration.migration_batch','migration.change_log'
+  ]) required_table
+ WHERE to_regclass(required_table) IS NULL;
+
+INSERT INTO kuc_verification_violation
+SELECT 'V004_MISSING_TABLE_COMMENT', n.nspname || '.' || c.relname, '基表缺少 COMMENT ON TABLE'
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND c.relkind IN ('r','p')
+   AND NULLIF(btrim(obj_description(c.oid, 'pg_class')), '') IS NULL;
+
+INSERT INTO kuc_verification_violation
+SELECT 'V005_MISSING_COLUMN_COMMENT', n.nspname || '.' || c.relname || '.' || a.attname, '列缺少非空注释'
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  JOIN pg_attribute a ON a.attrelid = c.oid
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND c.relkind IN ('r','p') AND a.attnum > 0 AND NOT a.attisdropped
+   AND NULLIF(btrim(col_description(c.oid, a.attnum)), '') IS NULL;
+
+INSERT INTO kuc_verification_violation
+SELECT 'V005_PLACEHOLDER_COLUMN_COMMENT', n.nspname || '.' || c.relname || '.' || a.attname, '列注释仍为旧版占位说明，未形成可用数据字典'
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  JOIN pg_attribute a ON a.attrelid = c.oid
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND c.relkind IN ('r','p') AND a.attnum > 0 AND NOT a.attisdropped
+   AND col_description(c.oid, a.attnum) LIKE '%具体业务语义见表注释%';
+
+INSERT INTO kuc_verification_violation
+SELECT 'V006_MISSING_PRIMARY_KEY', n.nspname || '.' || c.relname, '基表缺少主键'
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND c.relkind = 'r'
+   AND NOT EXISTS (SELECT 1 FROM pg_constraint x WHERE x.conrelid = c.oid AND x.contype = 'p');
+
+INSERT INTO kuc_verification_violation
+SELECT 'V007_UNCONSTRAINED_STATE', n.nspname || '.' || c.relname || '.' || a.attname, '状态列未被本表 CHECK 约束引用'
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  JOIN pg_attribute a ON a.attrelid = c.oid
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND c.relkind = 'r' AND a.attnum > 0 AND NOT a.attisdropped
+   AND a.attname LIKE '%\_state' ESCAPE '\'
+   AND a.atttypid = 'text'::regtype
+   AND NOT EXISTS (
+       SELECT 1 FROM pg_constraint x
+        WHERE x.conrelid = c.oid AND x.contype = 'c'
+          AND a.attnum = ANY(x.conkey)
+   );
+
+INSERT INTO kuc_verification_violation
+SELECT 'V008_MISSING_PUBLIC_ID_TRIGGER', n.nspname || '.' || c.relname, '含 public_id 的表未登记 core.fn_register_public_id 触发器'
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND c.relkind = 'r'
+   AND NOT (n.nspname = 'core' AND c.relname = 'public_id_ledger')
+   AND EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'public_id' AND NOT a.attisdropped)
+   AND NOT EXISTS (
+       SELECT 1 FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid
+        WHERE t.tgrelid = c.oid AND NOT t.tgisinternal AND p.proname = 'fn_register_public_id'
+   );
+
+INSERT INTO kuc_verification_violation
+SELECT 'V009_ROW_VERSION_WITHOUT_TRIGGER', n.nspname || '.' || c.relname, '含 row_version 的表缺少自动递增触发器'
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND c.relkind = 'r'
+   AND EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'row_version' AND NOT a.attisdropped)
+   AND NOT EXISTS (
+       SELECT 1 FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid
+        WHERE t.tgrelid = c.oid AND NOT t.tgisinternal AND p.proname = 'fn_increment_row_version'
+   );
+
+INSERT INTO kuc_verification_violation
+SELECT 'V010_FORBIDDEN_PLAINTEXT_COLUMN', n.nspname || '.' || c.relname || '.' || a.attname, '疑似保存密码、Secret、完整 Token、私钥、手机号或邮箱明文'
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  JOIN pg_attribute a ON a.attrelid = c.oid
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND c.relkind = 'r' AND a.attnum > 0 AND NOT a.attisdropped
+   AND lower(a.attname) = ANY(ARRAY['password','password_plaintext','secret','client_secret','token','access_token','refresh_token','id_token','authorization_code','private_key','phone','phone_number','email','email_address','verification_code']);
+
+INSERT INTO kuc_verification_violation
+SELECT 'V011_MISSING_CRITICAL_INDEX', required_index, '关键唯一性或撤销/重试索引不存在'
+  FROM unnest(ARRAY[
+    'ux_identifier_verified_scope','ux_authorization_grant_active','ux_refresh_token_current',
+    'ux_membership_effective','ux_consent_effective','ux_config_release_active',
+    'ux_authority_lease_active','ux_subject_assignment_active','ux_role_assignment_effective',
+    'ux_user_session_login_transaction','ux_authorization_code_login_transaction','ux_token_family_active_grant',
+    'ux_consent_pending','ix_outbox_publish','ix_revocation_target'
+  ]) required_index
+ WHERE NOT EXISTS (SELECT 1 FROM pg_indexes i WHERE i.indexname = required_index);
+
+INSERT INTO kuc_verification_violation
+SELECT 'V012_MISSING_CRITICAL_TRIGGER', required_trigger, '关键不变量触发器不存在'
+  FROM unnest(ARRAY[
+    'trg_user_account_terminal','trg_user_account_public_id','trg_session_insert','trg_grant_activation',
+    'trg_device_loss','trg_membership_scope','trg_consent_epoch','trg_approval_case_guard',
+    'trg_approval_case_initial_state','trg_config_release_guard','trg_config_release_approval',
+    'trg_config_release_binding_immutable','trg_policy_release_binding_immutable','trg_risk_policy_release_binding_immutable',
+    'trg_client_activation_approval',
+    'trg_client_configuration_immutable','trg_client_initial_state','trg_identity_provider_state',
+    'trg_key_asset_state','trg_key_asset_initial_state','trg_consent_aggregate_context',
+    'trg_key_asset_approval_binding','trg_zz_approval_case_evidence',
+    'trg_authorization_code_context','trg_authorization_code_state','trg_session_state_guard','trg_token_family_context',
+    'trg_token_family_state_guard','trg_refresh_token_guard','trg_refresh_token_successor','trg_reference_token_context',
+    'trg_organization_hierarchy','trg_group_member_guard','trg_role_assignment_scope',
+    'trg_outbox_immutable','trg_webhook_delivery_immutable','trg_zz_message_send_immutable',
+    'trg_machine_state','trg_audit_event_chain','trg_change_log_immutable'
+  ]) required_trigger
+ WHERE NOT EXISTS (SELECT 1 FROM pg_trigger t WHERE t.tgname = required_trigger AND NOT t.tgisinternal);
+
+INSERT INTO kuc_verification_violation
+SELECT 'V013_MODEL_COUNT_DRIFT', 'database', '平台基表数量不是基线定义的 145；迁移可能缺失或文档/验收未同步'
+ WHERE (
+    SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+       AND c.relkind = 'r'
+ ) <> 145;
+
+INSERT INTO kuc_verification_violation
+SELECT 'V014_MISSING_FOREIGN_KEY_INDEX', con.conrelid::regclass::text || '.' || con.conname, '外键列没有可用的非部分前导索引'
+  FROM pg_constraint con
+  JOIN pg_class c ON c.oid = con.conrelid
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE con.contype = 'f'
+   AND n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND NOT EXISTS (
+       SELECT 1
+         FROM pg_index i
+        WHERE i.indrelid = con.conrelid
+          AND i.indisvalid
+          AND i.indpred IS NULL
+          AND (
+              SELECT array_agg(x.attnum ORDER BY x.ordinality)
+                FROM unnest(i.indkey::smallint[]) WITH ORDINALITY AS x(attnum, ordinality)
+               WHERE x.ordinality <= cardinality(con.conkey)
+          ) = con.conkey
+   );
+
+INSERT INTO kuc_verification_violation
+SELECT 'V015_BUSINESS_LINE_WITHOUT_FOREIGN_KEY', c.oid::regclass::text, '直接 business_line_id 列未引用 org.business_line(id)'
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'business_line_id' AND NOT a.attisdropped
+ WHERE c.relkind = 'r'
+   AND n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND NOT EXISTS (
+       SELECT 1 FROM pg_constraint fk
+        WHERE fk.conrelid = c.oid
+          AND fk.contype = 'f'
+          AND fk.confrelid = 'org.business_line'::regclass
+          AND fk.conkey = ARRAY[a.attnum]::smallint[]
+   );
+
+INSERT INTO kuc_verification_violation
+SELECT 'V015_TENANT_BUSINESS_SCOPE_UNPROVEN', c.oid::regclass::text, '同时含 tenant_id/business_line_id 的表缺少范围一致性复合外键'
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  JOIN pg_attribute tenant_col ON tenant_col.attrelid = c.oid AND tenant_col.attname = 'tenant_id' AND NOT tenant_col.attisdropped
+  JOIN pg_attribute business_col ON business_col.attrelid = c.oid AND business_col.attname = 'business_line_id' AND NOT business_col.attisdropped
+ WHERE c.relkind = 'r'
+   AND n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND NOT EXISTS (
+       SELECT 1 FROM pg_constraint fk
+        WHERE fk.conrelid = c.oid
+          AND fk.contype = 'f'
+          AND fk.confrelid = 'org.tenant'::regclass
+          AND fk.conkey = ARRAY[tenant_col.attnum, business_col.attnum]::smallint[]
+   );
+
+INSERT INTO kuc_verification_violation
+SELECT 'V015_TENANT_ORGANIZATION_SCOPE_UNPROVEN', c.oid::regclass::text, '同时含 tenant_id/organization_id 的表缺少范围一致性复合外键'
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  JOIN pg_attribute tenant_col ON tenant_col.attrelid = c.oid AND tenant_col.attname = 'tenant_id' AND NOT tenant_col.attisdropped
+  JOIN pg_attribute organization_col ON organization_col.attrelid = c.oid AND organization_col.attname = 'organization_id' AND NOT organization_col.attisdropped
+ WHERE c.relkind = 'r'
+   AND n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND NOT EXISTS (
+       SELECT 1 FROM pg_constraint fk
+        WHERE fk.conrelid = c.oid
+          AND fk.contype = 'f'
+          AND fk.confrelid = 'org.organization'::regclass
+          AND fk.conkey = ARRAY[organization_col.attnum, tenant_col.attnum]::smallint[]
+   );
+
+INSERT INTO kuc_verification_violation
+SELECT 'V015_TENANT_WITHOUT_FOREIGN_KEY', c.oid::regclass::text, '直接 tenant_id 列未引用 org.tenant(id)'
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'tenant_id' AND NOT a.attisdropped
+ WHERE c.relkind = 'r'
+   AND n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND c.oid <> 'org.tenant'::regclass
+   AND NOT EXISTS (
+       SELECT 1 FROM pg_constraint fk
+        WHERE fk.conrelid = c.oid
+          AND fk.contype = 'f'
+          AND fk.confrelid = 'org.tenant'::regclass
+          AND fk.conkey = ARRAY[a.attnum]::smallint[]
+   );
+
+INSERT INTO kuc_verification_violation
+SELECT 'V016_WRONG_RELATION_OWNER', c.oid::regclass::text, '平台关系对象 owner 不是 kuc_owner'
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND c.relkind IN ('r','p','v','m','S','f')
+   AND pg_get_userbyid(c.relowner) <> 'kuc_owner';
+
+INSERT INTO kuc_verification_violation
+SELECT 'V016_WRONG_SCHEMA_OWNER', n.nspname, '平台 Schema owner 不是 kuc_owner'
+  FROM pg_namespace n
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND pg_get_userbyid(n.nspowner) <> 'kuc_owner';
+
+INSERT INTO kuc_verification_violation
+SELECT 'V016_WRONG_FUNCTION_OWNER', n.nspname || '.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')', '平台函数 owner 不是 kuc_owner'
+  FROM pg_proc p
+  JOIN pg_namespace n ON n.oid = p.pronamespace
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND pg_get_userbyid(p.proowner) <> 'kuc_owner';
+
+INSERT INTO kuc_verification_violation
+SELECT 'V017_APPLICATION_CONTROL_PLANE_WRITE', relation_name, 'kuc_app 不得写控制面、策略、联合、风险、Webhook 配置或消息模板'
+  FROM unnest(ARRAY[
+      'control.config_release','control.approval_case','authz.role','authz.policy_release',
+      'federation.identity_provider','risk.risk_policy_release','integration.webhook_subscription',
+      'messaging.message_template','messaging.route_policy','crypto.key_asset'
+  ]) AS relation_name
+ WHERE has_table_privilege('kuc_app', relation_name, 'INSERT')
+    OR has_table_privilege('kuc_app', relation_name, 'UPDATE')
+    OR has_table_privilege('kuc_app', relation_name, 'DELETE');
+
+INSERT INTO kuc_verification_violation
+SELECT 'V017_DISPATCHER_CONTENT_WRITE', object_name, '投递角色不得修改事件、Webhook 或消息正文/身份列'
+  FROM (VALUES
+      ('integration.outbox_event.payload', has_column_privilege('kuc_outbox_dispatcher', 'integration.outbox_event', 'payload', 'UPDATE')),
+      ('integration.outbox_event.tenant_id', has_column_privilege('kuc_outbox_dispatcher', 'integration.outbox_event', 'tenant_id', 'UPDATE')),
+      ('integration.webhook_delivery.payload_hash', has_column_privilege('kuc_outbox_dispatcher', 'integration.webhook_delivery', 'payload_hash', 'UPDATE')),
+      ('messaging.message_send.target_address_ciphertext', has_column_privilege('kuc_message_dispatcher', 'messaging.message_send', 'target_address_ciphertext', 'UPDATE')),
+      ('messaging.message_send.variable_hash', has_column_privilege('kuc_message_dispatcher', 'messaging.message_send', 'variable_hash', 'UPDATE'))
+  ) AS x(object_name, leaked)
+ WHERE leaked;
+
+INSERT INTO kuc_verification_violation
+SELECT 'V017_APPLICATION_SENSITIVE_READ', relation_name, 'kuc_app 不得读取认证恢复、Token、机器凭证、跨租户回放或消息密文'
+  FROM unnest(ARRAY[
+      'oauth.client_credential','oauth.refresh_token','oauth.authorization_code','oauth.reference_access_token',
+      'assurance.recovery_request','workload.machine_credential','integration.event_replay_request','messaging.message_send'
+  ]) AS x(relation_name)
+ WHERE has_table_privilege('kuc_app', relation_name, 'SELECT');
+
+INSERT INTO kuc_verification_violation
+SELECT 'V018_REQUIREMENT_TRACE_INCOMPLETE', 'core.requirement_trace', '能力地图/蓝图的 218 个 REQ/API/EVT/INV 标识未全部种入追踪矩阵'
+ WHERE (SELECT count(DISTINCT requirement_id) FROM core.requirement_trace) <> 218;
+
+INSERT INTO kuc_verification_violation
+SELECT 'V019_MIGRATION_HASH_INVALID', version, '迁移 SHA-256 不是 64 位小写十六进制'
+  FROM core.schema_migration
+ WHERE script_sha256 IS NOT NULL AND script_sha256 !~ '^[0-9a-f]{64}$';
+
+INSERT INTO kuc_verification_violation
+SELECT 'V020_MISSING_HARDENING_COLUMN', required_column, '安全加固列不存在'
+  FROM unnest(ARRAY[
+      'iam.identifier.ownership_digest','iam.identifier.ownership_key_version',
+      'authn.verification_challenge.hash_key_version','authn.recovery_code.hash_key_version',
+      'oauth.client.configuration_hash','federation.identity_provider.configuration_hash',
+      'crypto.key_asset.asset_metadata_hash','audit.audit_outbox.tenant_id',
+      'oauth.authorization_grant.machine_epoch_at_grant','oauth.reference_access_token.machine_epoch_at_issue',
+      'authz.role.organization_id','control.config_release.approval_execution_id',
+      'oauth.client.approval_execution_id','oauth.client.last_activation_execution_id',
+      'federation.identity_provider.last_activation_execution_id',
+      'authz.role_assignment.approval_execution_id','authz.role_assignment.last_activation_execution_id',
+      'privacy.consent.consent_version','oauth.user_session.expired_at','oauth.user_session.compromise_reason_code',
+      'control.approval_case.submitted_at','control.approval_case.rejected_at',
+      'authz.policy_release.revoked_at','risk.risk_policy_release.retired_at','risk.risk_policy_release.revoked_at'
+  ]) AS required_column
+ WHERE NOT EXISTS (
+     SELECT 1
+       FROM pg_attribute a
+      WHERE a.attrelid = to_regclass(split_part(required_column, '.', 1) || '.' || split_part(required_column, '.', 2))
+        AND a.attname = split_part(required_column, '.', 3)
+        AND NOT a.attisdropped
+ );
+
+INSERT INTO kuc_verification_violation
+SELECT 'V021_PLATFORM_TENANT_MISSING', 'org.tenant:00000000-0000-0000-0000-000000000000', '平台范围全零 UUID 租户/业务线种子缺失或未激活'
+ WHERE NOT EXISTS (
+     SELECT 1
+       FROM org.tenant t
+       JOIN org.business_line b ON b.id = t.business_line_id
+      WHERE t.id = '00000000-0000-0000-0000-000000000000'
+        AND b.id = '00000000-0000-0000-0000-000000000000'
+        AND t.tenant_state = 'ACTIVE'
+        AND b.business_line_state = 'ACTIVE'
+ );
+
+INSERT INTO kuc_verification_violation
+SELECT 'V022_PUBLIC_FUNCTION_EXECUTE', n.nspname || '.' || p.proname, '平台函数仍向 PUBLIC 开放 EXECUTE'
+ FROM pg_proc p
+  JOIN pg_namespace n ON n.oid = p.pronamespace
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND EXISTS (
+       SELECT 1
+         FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) acl
+        WHERE acl.grantee = 0 AND acl.privilege_type = 'EXECUTE'
+   );
+
+INSERT INTO kuc_verification_violation
+SELECT 'V023_RLS_DIRECT_TENANT_MISSING', c.oid::regclass::text, '已登记 910，但直接 tenant_id 表未启用并 FORCE RLS'
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'tenant_id' AND NOT a.attisdropped
+ WHERE EXISTS (SELECT 1 FROM core.schema_migration WHERE version = '910')
+   AND c.relkind = 'r'
+   AND n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND (NOT c.relrowsecurity OR NOT c.relforcerowsecurity);
+
+INSERT INTO kuc_verification_violation
+SELECT 'V023_RLS_DERIVED_POLICY_MISSING', relation_name, '已登记 910，但关键派生租户表缺少 derived_tenant_context_policy'
+  FROM unnest(ARRAY[
+      'core.async_operation_step','authn.login_factor','oauth.application','oauth.api_resource','oauth.scope_definition',
+      'oauth.client_uri','oauth.client_credential',
+      'oauth.refresh_token','oauth.authorization_code','oauth.logout_request','oauth.logout_target_result',
+      'org.group_member','authz.role_permission','authz.role_exclusion','authz.access_review',
+      'control.approval_decision','control.client_certification_run',
+      'profile.business_profile','profile.profile_change','privacy.consent',
+      'privacy.privacy_request','privacy.privacy_request_task','privacy.export_job','privacy.deletion_proof',
+      'federation.identity_provider_key','federation.external_identity','federation.attribute_mapping',
+      'federation.directory_object','federation.directory_sync_run','federation.assertion_replay',
+      'integration.webhook_delivery','messaging.delivery_receipt','messaging.reachability',
+      'workload.machine_credential','workload.workload_attestation',
+      'migration.migration_batch','migration.authority_lease','migration.legacy_id_mapping',
+      'migration.duplicate_candidate','migration.change_log','migration.reconciliation_run','migration.rollback_execution'
+  ]) AS x(relation_name)
+ WHERE EXISTS (SELECT 1 FROM core.schema_migration WHERE version = '910')
+   AND NOT EXISTS (
+       SELECT 1 FROM pg_policy p
+        WHERE p.polrelid = relation_name::regclass
+          AND p.polname = 'derived_tenant_context_policy'
+   );
+
+INSERT INTO kuc_verification_violation
+SELECT 'V023_RLS_TENANT_ROOT_MISSING', relation_name, '已登记 910，但 Tenant/Business Line 隔离根未启用并 FORCE RLS'
+  FROM unnest(ARRAY['org.tenant','org.business_line']) AS x(relation_name)
+  JOIN pg_class c ON c.oid = relation_name::regclass
+ WHERE EXISTS (SELECT 1 FROM core.schema_migration WHERE version = '910')
+   AND (NOT c.relrowsecurity OR NOT c.relforcerowsecurity);
+
+SELECT check_code, object_name, detail
+  FROM kuc_verification_violation
+ ORDER BY check_code, object_name;
+
+DO $$
+DECLARE v_count integer;
 BEGIN
-    -- ---------------------------------------------------------------------
-    -- V-020：每张表必须有主键
-    -- ---------------------------------------------------------------------
-    INSERT INTO verify_violation
-    SELECT 'V-020', 'ERROR', format('%s.%s 缺少主键', n.nspname, c.relname)
-    FROM pg_class c
-    JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = ANY (v_schemas)
-      AND c.relkind IN ('r', 'p')
-      AND NOT c.relispartition
-      AND NOT EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conrelid = c.oid AND k.contype = 'p');
-
-    -- ---------------------------------------------------------------------
-    -- V-021：每张表必须有 COMMENT，且注释中含能力或规范编号（蓝图 §18.4 追踪矩阵）
-    -- ---------------------------------------------------------------------
-    INSERT INTO verify_violation
-    SELECT 'V-021', 'ERROR', format('%s.%s 的 COMMENT 缺少 CAP-/REQ-/INV-/AT-/API-/EVT- 追溯编号', n.nspname, c.relname)
-    FROM pg_class c
-    JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = ANY (v_schemas)
-      AND c.relkind IN ('r', 'p')
-      AND NOT c.relispartition
-      AND COALESCE(obj_description(c.oid, 'pg_class'), '') !~ '(CAP|REQ|INV|AT|SLO|TTL|TERM|API|EVT)-[A-Z]+-[0-9]{3}';
-
-    -- ---------------------------------------------------------------------
-    -- V-005：禁止出现名为 status 的列（INV-G-005：状态必须正交拆列）
-    -- ---------------------------------------------------------------------
-    INSERT INTO verify_violation
-    SELECT 'V-005', 'ERROR', format('%s.%s 存在被禁止的列名 %s，状态必须语义化拆列', table_schema, table_name, column_name)
-    FROM information_schema.columns
-    WHERE table_schema = ANY (v_schemas)
-      AND column_name IN ('status', 'state', 'account_status');
-
-    -- ---------------------------------------------------------------------
-    -- V-003：禁止疑似明文标识列（INV-G-003 / INV-G-007 / REQ-KEY-008）
-    -- 允许的形态只有 _cipher、_hash、_blind_index、_masked、_digest、_thumbprint
-    -- ---------------------------------------------------------------------
-    INSERT INTO verify_violation
-    SELECT 'V-003', 'ERROR', format('%s.%s.%s 疑似明文敏感列，必须改为密文、盲索引或掩码形态', table_schema, table_name, column_name)
-    FROM information_schema.columns
-    WHERE table_schema = ANY (v_schemas)
-      AND (
-            column_name ~ '(phone|mobile|msisdn|email|id_card|idcard|passport|birth|real_name|secret|password|token)'
-        )
-      AND column_name !~ '(_cipher|_hash|_blind_index|_masked|_digest|_thumbprint|_version|_ref|_at|_state|_kind|_code|_id|_uri|_count|_format|_method|_algorithm)$'
-      AND NOT (table_schema = 'core' AND table_name = 'error_code');
-
-    -- ---------------------------------------------------------------------
-    -- V-015：租户内表必须有 tenant_id NOT NULL
-    -- ---------------------------------------------------------------------
-    FOREACH v_item SLICE 1 IN ARRAY v_tenant_scoped LOOP
-        SELECT count(*) INTO v_cnt
-        FROM information_schema.columns
-        WHERE table_schema = v_item[1] AND table_name = v_item[2]
-          AND column_name = 'tenant_id' AND is_nullable = 'NO';
-        IF v_cnt = 0 THEN
-            INSERT INTO verify_violation VALUES ('V-015', 'ERROR',
-                format('%s.%s 缺少 tenant_id NOT NULL（INV-G-015 租户隔离）', v_item[1], v_item[2]));
-        END IF;
-    END LOOP;
-
-    -- ---------------------------------------------------------------------
-    -- V-008：追加型表的 uc_app 不得拥有 UPDATE / DELETE
-    -- ---------------------------------------------------------------------
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'uc_app') THEN
-        FOREACH v_item SLICE 1 IN ARRAY v_append_only LOOP
-            IF EXISTS (
-                SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-                WHERE n.nspname = v_item[1] AND c.relname = v_item[2]
-            ) THEN
-                IF has_table_privilege('uc_app', format('%I.%I', v_item[1], v_item[2]), 'UPDATE')
-                   OR has_table_privilege('uc_app', format('%I.%I', v_item[1], v_item[2]), 'DELETE') THEN
-                    INSERT INTO verify_violation VALUES ('V-008', 'ERROR',
-                        format('追加型表 %s.%s 仍对 uc_app 授予 UPDATE/DELETE（INV-G-008）', v_item[1], v_item[2]));
-                END IF;
-            ELSE
-                INSERT INTO verify_violation VALUES ('V-008', 'ERROR',
-                    format('追加型表 %s.%s 不存在', v_item[1], v_item[2]));
-            END IF;
-        END LOOP;
-    ELSE
-        INSERT INTO verify_violation VALUES ('V-008', 'ERROR', '角色 uc_app 不存在，无法校验追加型表权限');
-    END IF;
-
-    -- ---------------------------------------------------------------------
-    -- 必须存在的索引 / 触发器 / 约束
-    -- ---------------------------------------------------------------------
-    FOREACH v_item SLICE 1 IN ARRAY v_required_index LOOP
-        IF NOT EXISTS (
-            SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE n.nspname = v_item[2] AND c.relname = v_item[3] AND c.relkind IN ('i', 'I')
-        ) THEN
-            INSERT INTO verify_violation VALUES (v_item[1], 'ERROR',
-                format('缺少必需索引 %s.%s', v_item[2], v_item[3]));
-        END IF;
-    END LOOP;
-
-    FOREACH v_item SLICE 1 IN ARRAY v_required_trigger LOOP
-        IF NOT EXISTS (
-            SELECT 1 FROM pg_trigger t
-            JOIN pg_class c ON c.oid = t.tgrelid
-            JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE n.nspname = v_item[2] AND c.relname = v_item[3] AND t.tgname = v_item[4] AND NOT t.tgisinternal
-        ) THEN
-            INSERT INTO verify_violation VALUES (v_item[1], 'ERROR',
-                format('缺少必需触发器 %s.%s.%s', v_item[2], v_item[3], v_item[4]));
-        END IF;
-    END LOOP;
-
-    FOR v_rec IN SELECT unnest(v_required_constraint) AS conname LOOP
-        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = v_rec.conname) THEN
-            INSERT INTO verify_violation VALUES ('V-CONSTRAINT', 'ERROR',
-                format('缺少必需约束 %s（见构建文档 §5 不变量映射）', v_rec.conname));
-        END IF;
-    END LOOP;
-
-    -- ---------------------------------------------------------------------
-    -- V-022：所有 *_state 列必须有引用该列的 CHECK 约束
-    -- ---------------------------------------------------------------------
-    INSERT INTO verify_violation
-    SELECT 'V-022', 'ERROR', format('%s.%s.%s 是状态列但没有 CHECK 约束', n.nspname, c.relname, a.attname)
-    FROM pg_attribute a
-    JOIN pg_class c ON c.oid = a.attrelid
-    JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = ANY (v_schemas)
-      AND c.relkind IN ('r', 'p')
-      AND NOT c.relispartition
-      AND a.attnum > 0 AND NOT a.attisdropped
-      AND a.attname LIKE '%\_state'
-      AND NOT EXISTS (
-          SELECT 1 FROM pg_constraint k
-          WHERE k.conrelid = c.oid AND k.contype = 'c'
-            AND pg_get_constraintdef(k.oid) LIKE '%' || a.attname || '%'
-      );
-
-    -- ---------------------------------------------------------------------
-    -- V-023：所有含 security_epoch 的表必须有单调递增触发器
-    -- ---------------------------------------------------------------------
-    INSERT INTO verify_violation
-    SELECT 'V-023', 'ERROR', format('%s.%s 含 security_epoch 但缺少单调递增触发器（蓝图 §4.3）', n.nspname, c.relname)
-    FROM pg_class c
-    JOIN pg_namespace n ON n.oid = c.relnamespace
-    JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'security_epoch' AND a.attnum > 0
-    WHERE n.nspname = ANY (v_schemas)
-      AND c.relkind IN ('r', 'p')
-      AND NOT c.relispartition
-      AND NOT EXISTS (
-          SELECT 1 FROM pg_trigger t
-          WHERE t.tgrelid = c.oid AND NOT t.tgisinternal
-            AND pg_get_triggerdef(t.oid) LIKE '%fn_forbid_epoch_decrease%'
-      );
-
-    -- ---------------------------------------------------------------------
-    -- V-024：分区父表必须有当月分区与默认分区
-    -- ---------------------------------------------------------------------
-    FOR v_rec IN
-        SELECT n.nspname AS sch, c.relname AS tbl
-        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = ANY (v_schemas) AND c.relkind = 'p'
-    LOOP
-        IF NOT EXISTS (
-            SELECT 1 FROM pg_class p JOIN pg_namespace pn ON pn.oid = p.relnamespace
-            WHERE pn.nspname = v_rec.sch AND p.relname = format('%s_p%s', v_rec.tbl, to_char(now(), 'YYYYMM'))
-        ) THEN
-            INSERT INTO verify_violation VALUES ('V-024', 'ERROR',
-                format('%s.%s 缺少当月分区，写入将落入默认分区（构建文档 §8）', v_rec.sch, v_rec.tbl));
-        END IF;
-        IF NOT EXISTS (
-            SELECT 1 FROM pg_class p JOIN pg_namespace pn ON pn.oid = p.relnamespace
-            WHERE pn.nspname = v_rec.sch AND p.relname = format('%s_pdefault', v_rec.tbl)
-        ) THEN
-            INSERT INTO verify_violation VALUES ('V-024', 'WARN',
-                format('%s.%s 缺少默认分区兜底', v_rec.sch, v_rec.tbl));
-        END IF;
-    END LOOP;
-
-    -- ---------------------------------------------------------------------
-    -- V-025：跨安全域外键必须在允许清单内（构建文档 §2.2 SPLIT-POINT）
-    -- 允许：cred.* -> id.global_user；除此之外 cred/obs 与其他域之间不得有外键
-    -- ---------------------------------------------------------------------
-    INSERT INTO verify_violation
-    SELECT 'V-025', 'ERROR',
-           format('未登记的跨安全域外键：%s.%s -> %s.%s（约束 %s）',
-                  sn.nspname, sc.relname, tn.nspname, tc.relname, k.conname)
-    FROM pg_constraint k
-    JOIN pg_class sc ON sc.oid = k.conrelid
-    JOIN pg_namespace sn ON sn.oid = sc.relnamespace
-    JOIN pg_class tc ON tc.oid = k.confrelid
-    JOIN pg_namespace tn ON tn.oid = tc.relnamespace
-    WHERE k.contype = 'f'
-      AND sn.nspname <> tn.nspname
-      AND (sn.nspname IN ('cred', 'obs') OR tn.nspname IN ('cred', 'obs'))
-      AND NOT (sn.nspname = 'cred' AND tn.nspname = 'id' AND tc.relname = 'global_user')
-      AND NOT (sn.nspname = 'auth' AND tn.nspname = 'cred' AND tc.relname = 'authenticator');
-
-    -- ---------------------------------------------------------------------
-    -- V-026：参考数据必须已播种（900_seed_baseline.sql）
-    -- ---------------------------------------------------------------------
-    SELECT count(*) INTO v_cnt FROM core.security_profile WHERE is_active;
-    IF v_cnt < 5 THEN
-        INSERT INTO verify_violation VALUES ('V-026', 'ERROR', format('core.security_profile 只有 %s 条有效记录，应为 SP1-SP5', v_cnt));
-    END IF;
-
-    SELECT count(*) INTO v_cnt FROM core.duration_baseline;
-    IF v_cnt < 25 THEN
-        INSERT INTO verify_violation VALUES ('V-026', 'ERROR', format('core.duration_baseline 只有 %s 条，蓝图 §15.3.1 时长基线未完整播种', v_cnt));
-    END IF;
-
-    SELECT count(*) INTO v_cnt FROM core.error_code WHERE deprecated_at IS NULL;
-    IF v_cnt < 13 THEN
-        INSERT INTO verify_violation VALUES ('V-026', 'ERROR', format('core.error_code 只有 %s 条，蓝图 §5.2 失败语义未完整播种', v_cnt));
-    END IF;
-
-    SELECT count(*) INTO v_cnt FROM core.data_classification;
-    IF v_cnt <> 4 THEN
-        INSERT INTO verify_violation VALUES ('V-026', 'ERROR', format('core.data_classification 应为 4 级，实际 %s', v_cnt));
-    END IF;
-
-    -- ---------------------------------------------------------------------
-    -- V-027：迁移台账必须包含全部预期版本
-    -- ---------------------------------------------------------------------
-    FOR v_rec IN
-        SELECT v AS version FROM unnest(ARRAY[
-            '000','010','020','030','040','050','060','070','080','090',
-            '100','110','120','130','140','150','160','170','180','190','900'
-        ]) AS v
-    LOOP
-        IF NOT EXISTS (SELECT 1 FROM core.schema_migration WHERE version = v_rec.version) THEN
-            INSERT INTO verify_violation VALUES ('V-027', 'ERROR',
-                format('迁移版本 %s 未登记，Schema 不完整', v_rec.version));
-        END IF;
-    END LOOP;
-END;
-$verify$;
-
--- 输出违规明细
-\echo '=== verify.sql 违规明细（空表示通过）==='
-SELECT check_id, severity, detail FROM verify_violation ORDER BY severity DESC, check_id, detail;
-
--- 汇总并在存在 ERROR 时以非零码退出
-DO $gate$
-DECLARE
-    v_errors bigint;
-    v_warns  bigint;
-BEGIN
-    SELECT count(*) FILTER (WHERE severity = 'ERROR'), count(*) FILTER (WHERE severity = 'WARN')
-      INTO v_errors, v_warns
-      FROM verify_violation;
-
-    RAISE NOTICE 'verify.sql 结果：ERROR=% WARN=%', v_errors, v_warns;
-
-    IF v_errors > 0 THEN
-        RAISE EXCEPTION 'VERIFY_FAILED: % 项数据库契约违规，按蓝图 §18.2 阻断发布', v_errors;
+    SELECT count(*) INTO v_count FROM kuc_verification_violation;
+    IF v_count > 0 THEN
+        RAISE EXCEPTION '数据库验收失败：% 个问题；请查看上方明细', v_count;
     END IF;
 END;
-$gate$;
+$$;
 
-DROP TABLE IF EXISTS verify_violation;
+COMMIT;
+SELECT '数据库结构、注释与关键不变量验证通过' AS verification_result;
