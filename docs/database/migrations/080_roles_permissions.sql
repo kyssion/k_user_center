@@ -22,6 +22,17 @@ BEGIN
 END;
 $$;
 
+COMMENT ON ROLE kuc_owner IS '统一身份与访问平台数据库对象的 NOLOGIN 所有者；仅供受控迁移 SET ROLE。';
+COMMENT ON ROLE kuc_migrator IS '统一身份与访问平台迁移执行角色；负责 DDL、注释和结构验收。';
+COMMENT ON ROLE kuc_app IS '普通领域应用角色；仅访问获准业务表，不得写控制面或读取凭证密文。';
+COMMENT ON ROLE kuc_authn_writer IS '认证数据面写角色；负责认证、会话、Token 与联合运行态。';
+COMMENT ON ROLE kuc_control_writer IS '控制面写角色；负责审批、策略、密钥、联合与隐私配置。';
+COMMENT ON ROLE kuc_outbox_dispatcher IS '事件与 Webhook 投递角色；仅推进投递状态、尝试记录和消费水位。';
+COMMENT ON ROLE kuc_message_dispatcher IS '消息投递角色；仅推进发送状态、回执、可达性和供应商指标。';
+COMMENT ON ROLE kuc_audit_writer IS '独立审计写角色；负责 Audit Outbox、审计事件和数据访问审计。';
+COMMENT ON ROLE kuc_auditor IS '审计与控制面只读角色；用于合规检查和证据查询。';
+COMMENT ON ROLE kuc_readonly IS '受控运维只读角色；生产环境应继续按人员和环境收窄。';
+
 GRANT kuc_owner TO kuc_migrator;
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
@@ -154,6 +165,8 @@ GRANT EXECUTE ON FUNCTION core.fn_hash_jsonb(jsonb) TO kuc_app, kuc_authn_writer
 GRANT EXECUTE ON FUNCTION oauth.fn_mark_refresh_token_reuse(uuid, text) TO kuc_authn_writer;
 REVOKE ALL ON FUNCTION core.fn_apply_complete_column_comments() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION core.fn_apply_complete_column_comments() TO kuc_migrator;
+REVOKE ALL ON FUNCTION core.fn_apply_complete_object_comments() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION core.fn_apply_complete_object_comments() TO kuc_migrator;
 
 -- 将平台对象从构建登录用户转交统一 NOLOGIN owner，RLS 才不会被应用角色以 owner 身份绕过。
 DO $$

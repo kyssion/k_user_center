@@ -198,5 +198,6 @@ END;
 $$;
 
 COMMENT ON SCHEMA org IS '业务线、租户、组织、Membership、Invitation、用户组与计量；可选 PostgreSQL RLS 已覆盖直接 tenant_id 与关键派生租户关系。';
+SELECT core.fn_apply_complete_object_comments();
 SELECT core.fn_register_migration('910', '可选 PostgreSQL RLS：直接与派生租户隔离策略', NULLIF(current_setting('kuc.migration_sha256', true), ''));
 COMMIT;

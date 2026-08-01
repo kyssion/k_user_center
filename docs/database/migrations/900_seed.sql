@@ -8,26 +8,36 @@ BEGIN;
 -- 全零 UUID 是显式的平台范围，不是“无租户”；所有直接 tenant_id 外键均可校验。
 INSERT INTO org.business_line(
     id, public_id, business_line_code, display_name, business_line_state,
-    owner_ref, data_residency_region, activated_at
+    owner_ref, data_residency_region
 )
 SELECT
     '00000000-0000-0000-0000-000000000000', 'biz_0000000000000000',
-    'platform', '平台控制面', 'ACTIVE', 'platform-security', 'CN', clock_timestamp()
+    'platform', '平台控制面', 'PROVISIONING', 'platform-security', 'CN'
 WHERE NOT EXISTS (
     SELECT 1 FROM org.business_line WHERE id = '00000000-0000-0000-0000-000000000000'
 );
 
+UPDATE org.business_line
+   SET business_line_state = 'ACTIVE', activated_at = COALESCE(activated_at, clock_timestamp())
+ WHERE id = '00000000-0000-0000-0000-000000000000'
+   AND business_line_state = 'PROVISIONING';
+
 INSERT INTO org.tenant(
     id, public_id, business_line_id, tenant_code, display_name, tenant_state,
-    tenant_type, data_residency_region, tenant_security_epoch, activated_at
+    tenant_type, data_residency_region, tenant_security_epoch
 )
 SELECT
     '00000000-0000-0000-0000-000000000000', 'ten_0000000000000000',
-    '00000000-0000-0000-0000-000000000000', 'platform', '平台范围', 'ACTIVE',
-    'PLATFORM', 'CN', 1, clock_timestamp()
+    '00000000-0000-0000-0000-000000000000', 'platform', '平台范围', 'PROVISIONING',
+    'PLATFORM', 'CN', 1
 WHERE NOT EXISTS (
     SELECT 1 FROM org.tenant WHERE id = '00000000-0000-0000-0000-000000000000'
 );
+
+UPDATE org.tenant
+   SET tenant_state = 'ACTIVE'
+ WHERE id = '00000000-0000-0000-0000-000000000000'
+   AND tenant_state = 'PROVISIONING';
 
 INSERT INTO core.data_classification(classification_code, display_name, sensitivity_rank, handling_rules) VALUES
 ('C0', '公开', 0, '{"encryption":"transport","logging":"allowed","export":"allowed"}'),
@@ -95,6 +105,7 @@ INSERT INTO authz.permission(permission_code, resource_type, action_code, risk_t
 ('identity.user.delete', 'USER', 'DELETE', 'CRITICAL', 'SP2', '发起或执行账号删除'),
 ('tenant.membership.manage', 'MEMBERSHIP', 'MANAGE', 'HIGH', 'SP2', '管理租户 Membership'),
 ('tenant.invitation.create', 'INVITATION', 'CREATE', 'HIGH', 'SP2', '创建租户邀请'),
+('tenant.invitation.accept', 'INVITATION', 'ACCEPT', 'HIGH', 'SP2', '接受租户邀请并创建或激活成员关系'),
 ('authz.policy.publish', 'POLICY', 'PUBLISH', 'CRITICAL', 'SP3', '发布授权策略'),
 ('control.approval.decide', 'APPROVAL_CASE', 'DECIDE', 'CRITICAL', 'SP3', '审批高风险变更'),
 ('crypto.key.rotate', 'KEY', 'ROTATE', 'CRITICAL', 'SP3', '轮换密钥'),

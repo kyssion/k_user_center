@@ -12,6 +12,17 @@ SET LOCAL client_min_messages = warning;
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
+DO $$
+BEGIN
+    EXECUTE format(
+        'COMMENT ON DATABASE %I IS %L',
+        current_database(),
+        '统一身份与访问平台 PostgreSQL 权威数据库；承载身份、认证、授权、租户、隐私、风险、机器身份、审计、集成与迁移控制数据。'
+    );
+END;
+$$;
+COMMENT ON EXTENSION pgcrypto IS '平台使用的 PostgreSQL 密码学扩展；提供 gen_random_uuid、digest 等数据库侧基础能力，不替代 KMS/HSM。';
+
 CREATE SCHEMA IF NOT EXISTS core;
 CREATE SCHEMA IF NOT EXISTS iam;
 CREATE SCHEMA IF NOT EXISTS authn;

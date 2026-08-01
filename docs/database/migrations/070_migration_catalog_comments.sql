@@ -1,6 +1,6 @@
 -- =============================================================================
 -- 070_migration_catalog_comments.sql
--- 旧系统迁移、双轨权威、反向 CDC、对账，以及全库列注释与数据字典
+-- 旧系统迁移、双轨权威、反向 CDC、对账，以及全维度对象注释与数据字典
 -- =============================================================================
 
 BEGIN;
@@ -248,7 +248,7 @@ BEGIN
           JOIN pg_namespace n ON n.oid = c.relnamespace
           JOIN pg_attribute a ON a.attrelid = c.oid
          WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
-           AND c.relkind IN ('r','p') AND a.attnum > 0 AND NOT a.attisdropped
+           AND c.relkind IN ('r','p','v','m') AND a.attnum > 0 AND NOT a.attisdropped
            AND col_description(c.oid, a.attnum) IS NULL
          ORDER BY n.nspname, c.relname, a.attnum
     LOOP
@@ -290,7 +290,152 @@ BEGIN
     RETURN v_count;
 END;
 $$;
-COMMENT ON FUNCTION core.fn_apply_complete_column_comments() IS '为平台所有基表中尚未显式注释的列补充非空数据字典注释；迁移末尾和 CI 均可重复执行。';
+COMMENT ON FUNCTION core.fn_apply_complete_column_comments() IS '为平台所有基表、视图和物化视图中尚未显式注释的列补充非空数据字典注释；迁移末尾和 CI 均可重复执行。';
+
+CREATE OR REPLACE FUNCTION core.fn_apply_complete_object_comments()
+RETURNS integer
+LANGUAGE plpgsql
+AS $$
+DECLARE r record; v_description text; v_count integer := 0;
+BEGIN
+    FOR r IN
+        SELECT n.oid, n.nspname
+          FROM pg_namespace n
+         WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+           AND NULLIF(btrim(obj_description(n.oid, 'pg_namespace')), '') IS NULL
+    LOOP
+        EXECUTE format('COMMENT ON SCHEMA %I IS %L', r.nspname,
+            format('统一身份与访问平台 %s 领域 Schema；对象必须通过版本化迁移、最小权限和审计治理。', r.nspname));
+        v_count := v_count + 1;
+    END LOOP;
+
+    FOR r IN
+        SELECT c.oid, n.nspname, c.relname, c.relkind
+          FROM pg_class c
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+           AND c.relkind IN ('r','p','v','m','S')
+           AND NULLIF(btrim(obj_description(c.oid, 'pg_class')), '') IS NULL
+    LOOP
+        v_description := format('%s.%s：统一身份与访问平台受迁移、权限、保留和审计规则治理的%s。',
+            r.nspname, r.relname,
+            CASE r.relkind WHEN 'v' THEN '查询视图' WHEN 'm' THEN '物化视图' WHEN 'S' THEN '受控序列' ELSE '领域基表' END);
+        EXECUTE format('%s %I.%I IS %L',
+            CASE r.relkind WHEN 'v' THEN 'COMMENT ON VIEW' WHEN 'm' THEN 'COMMENT ON MATERIALIZED VIEW'
+                           WHEN 'S' THEN 'COMMENT ON SEQUENCE' ELSE 'COMMENT ON TABLE' END,
+            r.nspname, r.relname, v_description);
+        v_count := v_count + 1;
+    END LOOP;
+
+    FOR r IN
+        SELECT idx.oid, n.nspname, idx.relname AS index_name, tbl.relname AS table_name,
+               i.indisprimary, i.indisunique, i.indpred IS NOT NULL AS is_partial
+          FROM pg_index i
+          JOIN pg_class idx ON idx.oid = i.indexrelid
+          JOIN pg_class tbl ON tbl.oid = i.indrelid
+          JOIN pg_namespace n ON n.oid = idx.relnamespace
+         WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+           AND NULLIF(btrim(obj_description(idx.oid, 'pg_class')), '') IS NULL
+    LOOP
+        v_description := format('%s.%s 上的%s%s索引 %s；用于数据库级唯一性、完整性或受控查询路径。',
+            r.nspname, r.table_name,
+            CASE WHEN r.indisprimary THEN '主键' WHEN r.indisunique THEN '唯一' ELSE '查询' END,
+            CASE WHEN r.is_partial THEN '部分' ELSE '' END,
+            r.index_name);
+        EXECUTE format('COMMENT ON INDEX %I.%I IS %L', r.nspname, r.index_name, v_description);
+        v_count := v_count + 1;
+    END LOOP;
+
+    FOR r IN
+        SELECT con.oid, con.conname, con.contype, n.nspname, c.relname
+          FROM pg_constraint con
+          JOIN pg_class c ON c.oid = con.conrelid
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+           AND NULLIF(btrim(obj_description(con.oid, 'pg_constraint')), '') IS NULL
+    LOOP
+        v_description := format('%s.%s 的%s约束 %s；由数据库拒绝违反领域完整性的数据。',
+            r.nspname, r.relname,
+            CASE r.contype WHEN 'p' THEN '主键' WHEN 'u' THEN '唯一' WHEN 'f' THEN '外键'
+                           WHEN 'c' THEN '检查' WHEN 'x' THEN '排斥' ELSE '完整性' END,
+            r.conname);
+        EXECUTE format('COMMENT ON CONSTRAINT %I ON %I.%I IS %L', r.conname, r.nspname, r.relname, v_description);
+        v_count := v_count + 1;
+    END LOOP;
+
+    FOR r IN
+        SELECT t.oid, t.tgname, n.nspname, c.relname, pn.nspname AS function_schema, p.proname AS function_name
+          FROM pg_trigger t
+          JOIN pg_class c ON c.oid = t.tgrelid
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          JOIN pg_proc p ON p.oid = t.tgfoid
+          JOIN pg_namespace pn ON pn.oid = p.pronamespace
+         WHERE NOT t.tgisinternal
+           AND n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+           AND NULLIF(btrim(obj_description(t.oid, 'pg_trigger')), '') IS NULL
+    LOOP
+        v_description := format('%s.%s 的触发器 %s；调用 %s.%s 维护状态机、不可变证据、版本、审计或范围完整性。',
+            r.nspname, r.relname, r.tgname, r.function_schema, r.function_name);
+        EXECUTE format('COMMENT ON TRIGGER %I ON %I.%I IS %L', r.tgname, r.nspname, r.relname, v_description);
+        v_count := v_count + 1;
+    END LOOP;
+
+    FOR r IN
+        SELECT t.oid, n.nspname, t.typname, t.typtype
+          FROM pg_type t
+          JOIN pg_namespace n ON n.oid = t.typnamespace
+          LEFT JOIN pg_class c ON c.oid = t.typrelid
+         WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+           AND (t.typtype IN ('d','e','r','m') OR (t.typtype = 'c' AND c.relkind = 'c'))
+           AND NULLIF(btrim(obj_description(t.oid, 'pg_type')), '') IS NULL
+    LOOP
+        v_description := format('%s.%s：平台显式声明的%s；取值、兼容和迁移必须版本化治理。',
+            r.nspname, r.typname, CASE WHEN r.typtype = 'd' THEN 'Domain' ELSE '数据类型' END);
+        IF r.typtype = 'd' THEN
+            EXECUTE format('COMMENT ON DOMAIN %I.%I IS %L', r.nspname, r.typname, v_description);
+        ELSE
+            EXECUTE format('COMMENT ON TYPE %I.%I IS %L', r.nspname, r.typname, v_description);
+        END IF;
+        v_count := v_count + 1;
+    END LOOP;
+
+    FOR r IN
+        SELECT p.oid, n.nspname, p.proname, p.prokind,
+               pg_get_function_identity_arguments(p.oid) AS identity_arguments
+          FROM pg_proc p
+          JOIN pg_namespace n ON n.oid = p.pronamespace
+         WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+           AND p.prokind IN ('f','p')
+           AND NULLIF(btrim(obj_description(p.oid, 'pg_proc')), '') IS NULL
+    LOOP
+        v_description := format('%s.%s：平台数据库领域规则、触发器或受控查询辅助%s；调用权限遵循最小授权。',
+            r.nspname, r.proname, CASE WHEN r.prokind = 'p' THEN '过程' ELSE '函数' END);
+        IF r.prokind = 'p' THEN
+            EXECUTE format('COMMENT ON PROCEDURE %I.%I(%s) IS %L', r.nspname, r.proname, r.identity_arguments, v_description);
+        ELSE
+            EXECUTE format('COMMENT ON FUNCTION %I.%I(%s) IS %L', r.nspname, r.proname, r.identity_arguments, v_description);
+        END IF;
+        v_count := v_count + 1;
+    END LOOP;
+
+    FOR r IN
+        SELECT pol.oid, pol.polname, n.nspname, c.relname
+          FROM pg_policy pol
+          JOIN pg_class c ON c.oid = pol.polrelid
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+           AND NULLIF(btrim(obj_description(pol.oid, 'pg_policy')), '') IS NULL
+    LOOP
+        v_description := format('%s.%s 的 RLS Policy %s；限制业务角色的租户可见性并为受控平台角色保留显式路径。',
+            r.nspname, r.relname, r.polname);
+        EXECUTE format('COMMENT ON POLICY %I ON %I.%I IS %L', r.polname, r.nspname, r.relname, v_description);
+        v_count := v_count + 1;
+    END LOOP;
+
+    RETURN v_count;
+END;
+$$;
+COMMENT ON FUNCTION core.fn_apply_complete_object_comments() IS '为平台 Schema、表/视图/序列、Type/Domain、索引、约束、触发器、函数/过程及 RLS Policy 补充缺失的非空对象描述；可重复执行。';
 
 CREATE VIEW core.data_dictionary AS
 SELECT n.nspname AS schema_name,
@@ -310,6 +455,69 @@ SELECT n.nspname AS schema_name,
    AND c.relkind IN ('r','p') AND a.attnum > 0 AND NOT a.attisdropped;
 COMMENT ON VIEW core.data_dictionary IS '全库 Schema、表、表描述、列序、类型、空值、默认值和列描述的可查询数据字典。';
 
+CREATE VIEW core.object_dictionary AS
+SELECT 'DATABASE'::text AS object_dimension, NULL::text AS schema_name, NULL::text AS parent_object,
+       d.datname AS object_name, shobj_description(d.oid, 'pg_database') AS description
+  FROM pg_database d WHERE d.datname = current_database()
+UNION ALL
+SELECT 'EXTENSION', NULL, NULL, e.extname, obj_description(e.oid, 'pg_extension')
+  FROM pg_extension e WHERE e.extname = 'pgcrypto'
+UNION ALL
+SELECT 'SCHEMA', n.nspname, NULL, n.nspname, obj_description(n.oid, 'pg_namespace')
+  FROM pg_namespace n
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+UNION ALL
+SELECT CASE c.relkind WHEN 'r' THEN 'TABLE' WHEN 'p' THEN 'TABLE' WHEN 'v' THEN 'VIEW'
+                      WHEN 'm' THEN 'MATERIALIZED_VIEW' WHEN 'S' THEN 'SEQUENCE' END,
+       n.nspname, NULL, c.relname, obj_description(c.oid, 'pg_class')
+  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND c.relkind IN ('r','p','v','m','S')
+UNION ALL
+SELECT 'COLUMN', n.nspname, c.relname, a.attname, col_description(c.oid, a.attnum)
+  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+  JOIN pg_attribute a ON a.attrelid = c.oid
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND c.relkind IN ('r','p','v','m') AND a.attnum > 0 AND NOT a.attisdropped
+UNION ALL
+SELECT 'INDEX', n.nspname, tbl.relname, idx.relname, obj_description(idx.oid, 'pg_class')
+  FROM pg_index i JOIN pg_class idx ON idx.oid = i.indexrelid JOIN pg_class tbl ON tbl.oid = i.indrelid
+  JOIN pg_namespace n ON n.oid = idx.relnamespace
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+UNION ALL
+SELECT 'CONSTRAINT', n.nspname, c.relname, con.conname, obj_description(con.oid, 'pg_constraint')
+  FROM pg_constraint con JOIN pg_class c ON c.oid = con.conrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+UNION ALL
+SELECT 'TRIGGER', n.nspname, c.relname, t.tgname, obj_description(t.oid, 'pg_trigger')
+  FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE NOT t.tgisinternal
+   AND n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+UNION ALL
+SELECT CASE WHEN t.typtype = 'd' THEN 'DOMAIN' ELSE 'TYPE' END,
+       n.nspname, NULL, t.typname, obj_description(t.oid, 'pg_type')
+  FROM pg_type t
+  JOIN pg_namespace n ON n.oid = t.typnamespace
+  LEFT JOIN pg_class c ON c.oid = t.typrelid
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND (t.typtype IN ('d','e','r','m') OR (t.typtype = 'c' AND c.relkind = 'c'))
+UNION ALL
+SELECT CASE WHEN p.prokind = 'p' THEN 'PROCEDURE' ELSE 'FUNCTION' END,
+       n.nspname, NULL, p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')', obj_description(p.oid, 'pg_proc')
+  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+ WHERE p.prokind IN ('f','p')
+   AND n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+UNION ALL
+SELECT 'ROLE', NULL, NULL, r.rolname, shobj_description(r.oid, 'pg_authid')
+  FROM pg_roles r
+ WHERE r.rolname = ANY(ARRAY['kuc_owner','kuc_migrator','kuc_app','kuc_authn_writer','kuc_control_writer',
+                            'kuc_outbox_dispatcher','kuc_message_dispatcher','kuc_audit_writer','kuc_auditor','kuc_readonly'])
+UNION ALL
+SELECT 'POLICY', n.nspname, c.relname, pol.polname, obj_description(pol.oid, 'pg_policy')
+  FROM pg_policy pol JOIN pg_class c ON c.oid = pol.polrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration']);
+COMMENT ON VIEW core.object_dictionary IS '数据库、扩展、Schema、表/视图/序列、列、Type/Domain、索引、约束、触发器、函数/过程、角色和 RLS Policy 的统一可查询对象说明目录。';
+
 CREATE TRIGGER trg_migration_batch_public_id BEFORE INSERT ON migration.migration_batch FOR EACH ROW EXECUTE FUNCTION core.fn_register_public_id('MIGRATION_BATCH');
 CREATE TRIGGER trg_migration_batch_guard BEFORE UPDATE ON migration.migration_batch FOR EACH ROW EXECUTE FUNCTION migration.fn_batch_state_guard();
 CREATE TRIGGER trg_migration_batch_touch BEFORE UPDATE ON migration.migration_batch FOR EACH ROW EXECUTE FUNCTION core.fn_touch_updated_at();
@@ -320,5 +528,6 @@ CREATE TRIGGER trg_reconciliation_public_id BEFORE INSERT ON migration.reconcili
 CREATE TRIGGER trg_rollback_public_id BEFORE INSERT ON migration.rollback_execution FOR EACH ROW EXECUTE FUNCTION core.fn_register_public_id('ROLLBACK_EXECUTION');
 
 SELECT core.fn_apply_complete_column_comments();
+SELECT core.fn_apply_complete_object_comments();
 SELECT core.fn_register_migration('070', '迁移双轨、映射、反向 CDC、对账、回滚与全库数据字典', NULLIF(current_setting('kuc.migration_sha256', true), ''));
 COMMIT;

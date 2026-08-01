@@ -182,6 +182,13 @@ if (affected != 1)
 - 资源服务器缓存键必须包含所有适用 security epoch、策略版本和以 Consent 为依据时的 consent epoch。
 - Refresh Token 轮换在同一事务内预生成 successor UUID，先把旧 CURRENT 更新为 USED 并写 successor，再插入新 CURRENT；generation 由数据库按 Family 行锁分配。确认 USED Token 重放时调用 `oauth.fn_mark_refresh_token_reuse`，不得只在应用内标记。
 - Session 只能以 ACTIVE 初态创建；过期、失陷和撤销使用状态更新并由数据库填写时间，失陷/撤销必须传非空原因代码，应用不得直接写终态时间。
+- Login Transaction、Challenge、Business Line、Tenant、Organization、Membership、Invitation、Authenticator、Delegation、Machine Principal/Credential、Trust Bundle、Workload Attestation、Certificate、JWKS、安全例外和 Break-glass 均由数据库执行显式状态机；Repository 不得用通用 `Updateable<T>` 任意覆盖 `*_state` 或状态时间，应提供逐转换方法并检查受影响行数。
+- Challenge 创建必须写入 `risk_assessment_id` 与 32 字节 `risk_context_hash`；业务提交必须在同一数据库事务内把 `VERIFIED` 原子更新为 `CONSUMED`，不得把“验证成功”直接当作业务完成。
+- Machine Principal 从 `SUSPENDED` 恢复为 `ACTIVE` 必须提交新的 `last_revalidation_evidence_hash`；数据库写入可信复核时间并推进 `principal_security_epoch`。
+- Delegation、Trust Bundle、安全例外和 Break-glass 的上下文摘要必须与数据库 `core.fn_hash_jsonb(jsonb_build_object(...))` 的字段集合完全一致，并与 Approval Case 的 `after_value_hash` 相同；集合型代码先排序。优先用参数化 SQL 调用数据库函数生成审批摘要，不在 .NET 中另造一套 JSON 序列化规则。
+- Machine Credential 必须按类型写入匹配材料：`PRIVATE_KEY_JWT` 绑定同环境活动 `TOKEN_SIGNING` Key Asset，`MTLS` 绑定同环境有效客户端证书，`WORKLOAD_FEDERATION` 写受控公开材料，`SECRET` 只写强摘要。轮换先把旧凭证置为 `ROTATING`，新凭证用 `replaces_credential_id` 指向旧凭证，再激活新凭证。
+- Trust Bundle 从 `VALIDATED → APPROVED` 时才写入已执行的 `KEY_OPERATION` Approval Case；JWKS 从 `PUBLISHED → ACTIVE` 前至少等待 `2 × cache_max_age_seconds`，不得用应用时间伪造 `published_at/activated_at`。
+- 安全例外和 Break-glass 的草稿/待审批记录不预绑 Approval Case；分别只允许在 `DRAFT → APPROVED`、`PENDING → ACTIVE` 的状态更新中写入已执行审批 ID，之后绑定不可替换。
 - 创建 PENDING Consent 不推进聚合 epoch；只有 GRANTED、DENIED、WITHDRAWN、有效同意到期或 SUPERSEDED 才改变生效水位。同一聚合的新版本由数据库分配 `consent_version`。
 - Approval 必须从 DRAFT 创建；`submitted_at`、`approved_at`、`rejected_at`、`execution_id` 和其余关键状态时间由数据库生成，应用必须用 `UPDATE ... RETURNING` 取得真实值，不能预填或用应用服务器时间覆盖。
 - Config/授权策略/风险策略 Release 应在进入 ACTIVE 的同一事务前或同一更新中写入已执行审批的 case/execution ID；审批必须与资源 Tenant（全局资源使用平台租户）、类型、引用和内容摘要完全一致，激活后不得替换绑定。
@@ -219,7 +226,7 @@ await db.Ado.ExecuteCommandAsync(
 - JSONB 只用于版本化扩展：策略输入、证据、Schema、义务、检查点和发布内容。
 - 状态、唯一性、租户键、外键、epoch、过期时间、幂等键等必须是结构化列。
 - 写入 `profile.business_profile`、`sensitive_attribute` 前根据 `profile.field_definition.validation_schema` 校验类型、用途、权威域和权限。
-- JSON 序列化必须确定性处理，用于 hash 的对象需要固定字段规则；不要依赖属性枚举顺序。
+- JSON 序列化必须确定性处理，用于 hash 的对象需要固定字段规则；不要依赖属性枚举顺序。审批绑定摘要以数据库构造的 JSONB 为权威，数组按代码升序、`bytea` 使用十六进制文本、`timestamptz` 使用 UTC epoch 秒进入 JSONB。
 - 数组包含查询、JSONB 运算符、`FOR UPDATE SKIP LOCKED`、部分索引和 `RETURNING` 等 PostgreSQL 特性可通过参数化原生 SQL 使用。
 
 ## 10. 队列领取模式
@@ -278,13 +285,16 @@ Webhook 每次投递尝试都插入新的 `integration.webhook_delivery` 行并�
 1. 所有实体/查询输出的 SQL 使用正确的 `"schema"."table"`。
 2. `uuid`、`timestamptz`、`bytea`、`jsonb`、`text[]`、`uuid[]`、`interval` 往返一致。
 3. 100 并发 Identifier 绑定、Invitation 接受、Refresh Token 轮换最多一个成功；successor 必须同 Family 且恰好下一代，USED Token 重放会失陷整个 Family。
-4. `row_version` 冲突、状态终态恢复、epoch 回退被拒绝；Session 非 ACTIVE 插入、提前过期、缺少原因的失陷/撤销或改写终态时间均失败。
+4. `row_version` 冲突、状态跳步/终态恢复、epoch 回退被拒绝；Session 非 ACTIVE 插入、提前过期、缺少原因的失陷/撤销或改写终态时间均失败。
 5. 冻结用户不能创建 Session、刷新 Token 或登记 ACTIVE Authenticator。
 6. Login Transaction 未完成，或 User/Machine、Client、Tenant、scope/resource、Session、epoch 任一不一致时，Grant/Code/Token 签发失败。
-7. Consent 用途、类别、接收方、聚合 epoch 或过期时间任一不一致时，Grant、Token、营销订阅和偏好启用失败；创建 PENDING 不失效当前 GRANTED，决定生效后旧版本被原子替代。
-8. 审批非 DRAFT 插入、从 DRAFT 直接 EXECUTED、审核后篡改请求、换 Tenant/资源/摘要、改写数据库生成的状态时间或 `execution_id`，以及用同一执行再次激活资源均失败；Release 激活前可绑定执行结果，激活后不可替换。
-9. Outbox/Audit Outbox 与领域写入原子提交，故障后可重试且不重复副作用；正文/租户/Subject/Actor 不可改写。
-10. RLS 开启时直接表、派生表、跨租户、连接池复用、后台任务和平台角色行为正确。
-11. 日志扫描不出现密码、验证码、完整 Token、私钥和 Identifier 明文。
-12. 锁定的 SqlSugar/Npgsql 依赖图通过漏洞扫描和全部类型/SQL 快照回归。
-13. 在真实 PostgreSQL 16+ 上按顺序执行全部迁移并通过 `verify.sql`。
+7. Login Transaction 跳步、改写 PKCE/redirect/scope 上下文或重复消费失败；Challenge 跨用途、跨 Client、跨事务、风险摘要缺失、尝试次数回退/跳号及 100 并发消费最多一个成功。
+8. Consent 用途、类别、接收方、聚合 epoch 或过期时间任一不一致时，Grant、Token、营销订阅和偏好启用失败；创建 PENDING 不失效当前 GRANTED，决定生效后旧版本被原子替代。
+9. Business Line/Tenant/Organization/Membership/Invitation、Authenticator、Delegation、Machine Principal/Credential/Attestation、Trust Bundle、Certificate、JWKS、安全例外和 Break-glass 的非法初态、跳步、跨范围、材料类型错配、旧复核证据或审批摘要不一致全部失败。
+10. 审批非 DRAFT 插入、从 DRAFT 直接 EXECUTED、审核后篡改请求、换 Tenant/资源/摘要、改写数据库生成的状态时间或 `execution_id`，以及用同一执行再次激活资源均失败；Release 激活前可绑定执行结果，激活后不可替换。
+11. Outbox/Audit Outbox 与领域写入原子提交，故障后可重试且不重复副作用；正文/租户/Subject/Actor 不可改写。
+12. RLS 开启时直接表、派生表、跨租户、连接池复用、后台任务和平台角色行为正确，且所有 Policy 均有注释。
+13. 日志扫描不出现密码、验证码、完整 Token、私钥和 Identifier 明文。
+14. 锁定的 SqlSugar/Npgsql 依赖图通过漏洞扫描和全部类型/SQL 快照回归。
+15. 数据库、扩展、Schema、表/视图/序列、列、Type/Domain、索引、约束、触发器、函数/过程、角色及启用后的 RLS Policy 均具有非空 COMMENT，并能从 `core.object_dictionary` 查询。
+16. 在真实 PostgreSQL 16+ 上按顺序执行全部迁移并通过 `verify.sql`。

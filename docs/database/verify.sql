@@ -29,12 +29,18 @@ SELECT 'V003_MISSING_TABLE', required_table, '能力蓝图要求的核心表不�
     'oauth.client','oauth.authorization_grant','oauth.user_session','oauth.token_family','oauth.revocation_record',
     'org.tenant','org.membership','org.invitation','authz.authorization_decision','authz.relationship_tuple','authz.access_review','profile.field_definition','profile.notification_preference',
     'privacy.consent_aggregate','privacy.consent','privacy.privacy_request','privacy.cross_border_authorization','privacy.minor_protection','privacy.privacy_impact_assessment','federation.external_identity','federation.directory_object',
-    'risk.risk_signal','risk.risk_assessment','workload.machine_principal','workload.workload_attestation',
-    'assurance.delegation','control.approval_case','control.config_release','control.client_certification_run','crypto.key_asset',
+    'risk.risk_signal','risk.risk_assessment','workload.machine_principal','workload.machine_credential','workload.trust_bundle','workload.workload_attestation',
+    'assurance.delegation','control.approval_case','control.config_release','control.client_certification_run',
+    'crypto.key_asset','crypto.certificate_asset','crypto.jwks_release',
     'integration.outbox_event','integration.webhook_delivery','audit.audit_event','messaging.message_send','messaging.content_compliance_rule',
     'migration.migration_batch','migration.change_log'
-  ]) required_table
+ ]) required_table
  WHERE to_regclass(required_table) IS NULL;
+
+INSERT INTO kuc_verification_violation
+SELECT 'V003_MISSING_VIEW', required_view, '数据库契约要求的视图不存在'
+  FROM unnest(ARRAY['authn.device_authorization_status','core.data_dictionary','core.object_dictionary']) required_view
+ WHERE to_regclass(required_view) IS NULL;
 
 INSERT INTO kuc_verification_violation
 SELECT 'V004_MISSING_TABLE_COMMENT', n.nspname || '.' || c.relname, '基表缺少 COMMENT ON TABLE'
@@ -45,12 +51,111 @@ SELECT 'V004_MISSING_TABLE_COMMENT', n.nspname || '.' || c.relname, '基表缺�
    AND NULLIF(btrim(obj_description(c.oid, 'pg_class')), '') IS NULL;
 
 INSERT INTO kuc_verification_violation
+SELECT 'V004_MISSING_DATABASE_COMMENT', current_database(), '当前数据库缺少 COMMENT ON DATABASE'
+  FROM pg_database d
+ WHERE d.datname = current_database()
+   AND NULLIF(btrim(shobj_description(d.oid, 'pg_database')), '') IS NULL;
+
+INSERT INTO kuc_verification_violation
+SELECT 'V004_MISSING_EXTENSION_COMMENT', e.extname, '平台扩展缺少 COMMENT ON EXTENSION'
+  FROM pg_extension e
+ WHERE e.extname = 'pgcrypto'
+   AND NULLIF(btrim(obj_description(e.oid, 'pg_extension')), '') IS NULL;
+
+INSERT INTO kuc_verification_violation
+SELECT 'V004_MISSING_SCHEMA_COMMENT', n.nspname, '平台 Schema 缺少 COMMENT ON SCHEMA'
+  FROM pg_namespace n
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND NULLIF(btrim(obj_description(n.oid, 'pg_namespace')), '') IS NULL;
+
+INSERT INTO kuc_verification_violation
+SELECT 'V004_MISSING_VIEW_COMMENT', n.nspname || '.' || c.relname, '视图或物化视图缺少 COMMENT'
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND c.relkind IN ('v','m')
+   AND NULLIF(btrim(obj_description(c.oid, 'pg_class')), '') IS NULL;
+
+INSERT INTO kuc_verification_violation
+SELECT 'V004_MISSING_SEQUENCE_COMMENT', n.nspname || '.' || c.relname, '序列缺少 COMMENT ON SEQUENCE'
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND c.relkind = 'S'
+   AND NULLIF(btrim(obj_description(c.oid, 'pg_class')), '') IS NULL;
+
+INSERT INTO kuc_verification_violation
+SELECT 'V004_MISSING_INDEX_COMMENT', n.nspname || '.' || idx.relname, '索引缺少 COMMENT ON INDEX'
+  FROM pg_index i
+  JOIN pg_class idx ON idx.oid = i.indexrelid
+  JOIN pg_namespace n ON n.oid = idx.relnamespace
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND NULLIF(btrim(obj_description(idx.oid, 'pg_class')), '') IS NULL;
+
+INSERT INTO kuc_verification_violation
+SELECT 'V004_MISSING_CONSTRAINT_COMMENT', n.nspname || '.' || c.relname || '.' || con.conname, '约束缺少 COMMENT ON CONSTRAINT'
+  FROM pg_constraint con
+  JOIN pg_class c ON c.oid = con.conrelid
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND NULLIF(btrim(obj_description(con.oid, 'pg_constraint')), '') IS NULL;
+
+INSERT INTO kuc_verification_violation
+SELECT 'V004_MISSING_TRIGGER_COMMENT', n.nspname || '.' || c.relname || '.' || t.tgname, '业务触发器缺少 COMMENT ON TRIGGER'
+  FROM pg_trigger t
+  JOIN pg_class c ON c.oid = t.tgrelid
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE NOT t.tgisinternal
+   AND n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND NULLIF(btrim(obj_description(t.oid, 'pg_trigger')), '') IS NULL;
+
+INSERT INTO kuc_verification_violation
+SELECT 'V004_MISSING_TYPE_COMMENT', n.nspname || '.' || t.typname, '独立 Type/Domain 缺少 COMMENT'
+  FROM pg_type t
+  JOIN pg_namespace n ON n.oid = t.typnamespace
+  LEFT JOIN pg_class c ON c.oid = t.typrelid
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND (t.typtype IN ('d','e','r','m') OR (t.typtype = 'c' AND c.relkind = 'c'))
+   AND NULLIF(btrim(obj_description(t.oid, 'pg_type')), '') IS NULL;
+
+INSERT INTO kuc_verification_violation
+SELECT 'V004_MISSING_ROUTINE_COMMENT', n.nspname || '.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')', '函数或过程缺少 COMMENT'
+  FROM pg_proc p
+  JOIN pg_namespace n ON n.oid = p.pronamespace
+ WHERE p.prokind IN ('f','p')
+   AND n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND NULLIF(btrim(obj_description(p.oid, 'pg_proc')), '') IS NULL;
+
+INSERT INTO kuc_verification_violation
+SELECT 'V004_MISSING_ROLE_COMMENT', r.rolname, '平台角色缺少 COMMENT ON ROLE'
+  FROM pg_roles r
+ WHERE r.rolname = ANY(ARRAY['kuc_owner','kuc_migrator','kuc_app','kuc_authn_writer','kuc_control_writer',
+                            'kuc_outbox_dispatcher','kuc_message_dispatcher','kuc_audit_writer','kuc_auditor','kuc_readonly'])
+   AND NULLIF(btrim(shobj_description(r.oid, 'pg_authid')), '') IS NULL;
+
+INSERT INTO kuc_verification_violation
+SELECT 'V004_MISSING_POLICY_COMMENT', n.nspname || '.' || c.relname || '.' || p.polname, '已启用的 RLS Policy 缺少 COMMENT ON POLICY'
+  FROM pg_policy p
+  JOIN pg_class c ON c.oid = p.polrelid
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE EXISTS (SELECT 1 FROM core.schema_migration WHERE version = '910')
+   AND n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND NULLIF(btrim(obj_description(p.oid, 'pg_policy')), '') IS NULL;
+
+INSERT INTO kuc_verification_violation
+SELECT 'V004_OBJECT_DICTIONARY_GAP',
+       concat_ws('.', schema_name, parent_object, object_name),
+       object_dimension || ' 对象在 core.object_dictionary 中缺少非空描述'
+  FROM core.object_dictionary
+ WHERE NULLIF(btrim(description), '') IS NULL;
+
+INSERT INTO kuc_verification_violation
 SELECT 'V005_MISSING_COLUMN_COMMENT', n.nspname || '.' || c.relname || '.' || a.attname, '列缺少非空注释'
   FROM pg_class c
   JOIN pg_namespace n ON n.oid = c.relnamespace
   JOIN pg_attribute a ON a.attrelid = c.oid
  WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
-   AND c.relkind IN ('r','p') AND a.attnum > 0 AND NOT a.attisdropped
+   AND c.relkind IN ('r','p','v','m') AND a.attnum > 0 AND NOT a.attisdropped
    AND NULLIF(btrim(col_description(c.oid, a.attnum)), '') IS NULL;
 
 INSERT INTO kuc_verification_violation
@@ -59,7 +164,7 @@ SELECT 'V005_PLACEHOLDER_COLUMN_COMMENT', n.nspname || '.' || c.relname || '.' |
   JOIN pg_namespace n ON n.oid = c.relnamespace
   JOIN pg_attribute a ON a.attrelid = c.oid
  WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
-   AND c.relkind IN ('r','p') AND a.attnum > 0 AND NOT a.attisdropped
+   AND c.relkind IN ('r','p','v','m') AND a.attnum > 0 AND NOT a.attisdropped
    AND col_description(c.oid, a.attnum) LIKE '%具体业务语义见表注释%';
 
 INSERT INTO kuc_verification_violation
@@ -133,7 +238,7 @@ SELECT 'V011_MISSING_CRITICAL_INDEX', required_index, '关键唯一性或撤销/
 INSERT INTO kuc_verification_violation
 SELECT 'V012_MISSING_CRITICAL_TRIGGER', required_trigger, '关键不变量触发器不存在'
   FROM unnest(ARRAY[
-    'trg_user_account_terminal','trg_user_account_public_id','trg_session_insert','trg_grant_activation',
+    'trg_user_account_state','trg_user_account_public_id','trg_session_insert','trg_grant_activation',
     'trg_device_loss','trg_membership_scope','trg_consent_epoch','trg_approval_case_guard',
     'trg_approval_case_initial_state','trg_config_release_guard','trg_config_release_approval',
     'trg_config_release_binding_immutable','trg_policy_release_binding_immutable','trg_risk_policy_release_binding_immutable',
@@ -145,7 +250,12 @@ SELECT 'V012_MISSING_CRITICAL_TRIGGER', required_trigger, '关键不变量触发
     'trg_token_family_state_guard','trg_refresh_token_guard','trg_refresh_token_successor','trg_reference_token_context',
     'trg_organization_hierarchy','trg_group_member_guard','trg_role_assignment_scope',
     'trg_outbox_immutable','trg_webhook_delivery_immutable','trg_zz_message_send_immutable',
-    'trg_machine_state','trg_audit_event_chain','trg_change_log_immutable'
+    'trg_identifier_state','trg_operation_state','trg_device_state',
+    'trg_authenticator_activation','trg_login_transaction_state','trg_challenge_state',
+    'trg_business_line_state','trg_tenant_state','trg_organization_state','trg_membership_state','trg_invitation_state','trg_delegation_guard',
+    'trg_machine_state','trg_machine_credential_state','trg_trust_bundle_state','trg_attestation_state',
+    'trg_certificate_state','trg_jwks_state','trg_security_exception_state','trg_break_glass_state',
+    'trg_privacy_request_state','trg_migration_batch_guard','trg_audit_event_chain','trg_change_log_immutable'
   ]) required_trigger
  WHERE NOT EXISTS (SELECT 1 FROM pg_trigger t WHERE t.tgname = required_trigger AND NOT t.tgisinternal);
 
@@ -314,7 +424,23 @@ SELECT 'V020_MISSING_HARDENING_COLUMN', required_column, '安全加固列不存�
       'authz.role_assignment.approval_execution_id','authz.role_assignment.last_activation_execution_id',
       'privacy.consent.consent_version','oauth.user_session.expired_at','oauth.user_session.compromise_reason_code',
       'control.approval_case.submitted_at','control.approval_case.rejected_at',
-      'authz.policy_release.revoked_at','risk.risk_policy_release.retired_at','risk.risk_policy_release.revoked_at'
+      'authz.policy_release.revoked_at','risk.risk_policy_release.retired_at','risk.risk_policy_release.revoked_at',
+      'authn.authenticator.state_expired_at','authn.login_transaction.identified_at','authn.login_transaction.expired_at','authn.login_transaction.blocked_at',
+      'authn.verification_challenge.risk_assessment_id','authn.verification_challenge.risk_context_hash',
+      'org.business_line.suspended_at','org.business_line.irreversible_at','org.tenant.suspended_at',
+      'org.organization.suspended_at','org.membership.state_expired_at','org.invitation.state_expired_at',
+      'org.invitation.creation_authorization_decision_id','org.invitation.acceptance_authorization_decision_id',
+      'assurance.delegation.delegation_context_hash','assurance.delegation.revoked_by_ref',
+      'workload.machine_principal.last_revalidation_evidence_hash','workload.machine_credential.replaces_credential_id',
+      'workload.machine_credential.compromised_at','workload.trust_bundle.bundle_context_hash',
+      'workload.workload_attestation.expired_at','crypto.certificate_asset.activated_at',
+      'crypto.jwks_release.activated_at','crypto.jwks_release.revoked_at',
+      'control.security_exception.exception_context_hash','control.security_exception.tenant_id',
+      'control.break_glass_grant.grant_context_hash','control.break_glass_grant.expired_at',
+      'iam.identifier.state_reason_code','core.async_operation.blocked_at','core.async_operation.partial_at',
+      'oauth.device.trust_evidence_hash','oauth.device.loss_clear_evidence_hash',
+      'privacy.privacy_request.blocked_at','privacy.privacy_request.partial_at',
+      'migration.migration_batch.paused_from_state','migration.migration_batch.rolled_back_at'
   ]) AS required_column
  WHERE NOT EXISTS (
      SELECT 1

@@ -168,6 +168,15 @@ ALTER TABLE privacy.agreement_acceptance DROP CONSTRAINT uq_agreement_acceptance
 ALTER TABLE privacy.agreement_acceptance
     ADD CONSTRAINT uq_agreement_acceptance UNIQUE NULLS NOT DISTINCT (agreement_id, user_id, client_id, tenant_id);
 
+ALTER TABLE org.business_line
+    ADD COLUMN suspended_at timestamptz NULL,
+    ADD COLUMN closing_at timestamptz NULL,
+    ADD COLUMN irreversible_at timestamptz NULL,
+    ADD COLUMN state_reason_code text NULL,
+    ADD CONSTRAINT ck_business_line_activation CHECK (business_line_state <> 'ACTIVE' OR activated_at IS NOT NULL),
+    ADD CONSTRAINT ck_business_line_closing CHECK (business_line_state NOT IN ('CLOSING', 'CLOSED') OR closing_at IS NOT NULL),
+    ADD CONSTRAINT ck_business_line_irreversible CHECK (irreversible_at IS NULL OR business_line_state IN ('CLOSING', 'CLOSED'));
+
 ALTER TABLE org.tenant
     ADD CONSTRAINT uq_tenant_id_business_line UNIQUE (id, business_line_id);
 ALTER TABLE org.organization
@@ -208,6 +217,15 @@ ALTER TABLE authz.role
         OR (scope_kind = 'TENANT' AND business_line_id IS NOT NULL AND tenant_id IS NOT NULL AND organization_id IS NULL)
         OR (scope_kind = 'ORGANIZATION' AND business_line_id IS NOT NULL AND tenant_id IS NOT NULL AND organization_id IS NOT NULL)
     );
+
+ALTER TABLE authn.authenticator
+    ADD COLUMN state_expired_at timestamptz NULL,
+    ADD COLUMN state_reason_code text NULL,
+    ADD CONSTRAINT ck_authenticator_expired_state CHECK ((authenticator_state = 'EXPIRED') = (state_expired_at IS NOT NULL)),
+    ADD CONSTRAINT ck_authenticator_compromised_state CHECK (
+        authenticator_state <> 'COMPROMISED' OR compromised_at IS NOT NULL
+    ),
+    ADD CONSTRAINT ck_authenticator_revoked_state CHECK (authenticator_state <> 'REVOKED' OR revoked_at IS NOT NULL);
 
 DROP INDEX ux_authorization_grant_active;
 CREATE UNIQUE INDEX ux_authorization_grant_active
@@ -955,7 +973,8 @@ ALTER TABLE oauth.user_session
     ADD CONSTRAINT ck_user_session_expired CHECK ((session_state = 'EXPIRED') = (expired_at IS NOT NULL)),
     ADD CONSTRAINT ck_user_session_compromised CHECK (
         (compromised_at IS NULL) = (compromise_reason_code IS NULL)
-        AND (session_state = 'COMPROMISED') = (compromised_at IS NOT NULL)
+        AND (compromised_at IS NULL OR session_state IN ('COMPROMISED', 'REVOKED'))
+        AND (session_state <> 'COMPROMISED' OR compromised_at IS NOT NULL)
     ),
     ADD CONSTRAINT ck_user_session_revoked CHECK (
         (revoked_at IS NULL) = (revoke_reason_code IS NULL)
@@ -1745,6 +1764,8 @@ BEGIN
         v_allowed := true;
     ELSIF OLD.session_state = 'ACTIVE' AND NEW.session_state IN ('EXPIRED', 'COMPROMISED', 'REVOKED') THEN
         v_allowed := true;
+    ELSIF OLD.session_state = 'COMPROMISED' AND NEW.session_state = 'REVOKED' THEN
+        v_allowed := true;
     END IF;
     IF NOT v_allowed THEN
         RAISE EXCEPTION 'INVALID_STATE_TRANSITION: Session % -> %', OLD.session_state, NEW.session_state USING ERRCODE = '23514';
@@ -1767,7 +1788,7 @@ BEGIN
     END IF;
     IF (NEW.revoked_at, NEW.revoke_reason_code)
        IS DISTINCT FROM (OLD.revoked_at, OLD.revoke_reason_code)
-       AND NOT (OLD.session_state = 'ACTIVE' AND NEW.session_state = 'REVOKED') THEN
+       AND NOT (OLD.session_state IN ('ACTIVE', 'COMPROMISED') AND NEW.session_state = 'REVOKED') THEN
         RAISE EXCEPTION 'SESSION_REVOCATION_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
     END IF;
 
@@ -1781,7 +1802,7 @@ BEGIN
             RAISE EXCEPTION 'SESSION_COMPROMISE_REASON_REQUIRED' USING ERRCODE = '23514';
         END IF;
         NEW.compromised_at := clock_timestamp();
-    ELSIF OLD.session_state = 'ACTIVE' AND NEW.session_state = 'REVOKED' THEN
+    ELSIF OLD.session_state IN ('ACTIVE', 'COMPROMISED') AND NEW.session_state = 'REVOKED' THEN
         IF NULLIF(btrim(NEW.revoke_reason_code), '') IS NULL THEN
             RAISE EXCEPTION 'SESSION_REVOKE_REASON_REQUIRED' USING ERRCODE = '23514';
         END IF;
@@ -1790,7 +1811,7 @@ BEGIN
     RETURN NEW;
 END;
 $$;
-COMMENT ON FUNCTION oauth.fn_session_state_guard() IS 'Session 必须从 ACTIVE 创建，只能单向进入过期、失陷或撤销；原因和关键时间由数据库维护且不可改写。';
+COMMENT ON FUNCTION oauth.fn_session_state_guard() IS 'Session 必须从 ACTIVE 创建，可单向过期或撤销，失陷后允许继续正式撤销；原因和关键时间由数据库维护且不可改写。';
 
 CREATE OR REPLACE FUNCTION oauth.fn_refresh_token_guard()
 RETURNS trigger
@@ -2015,7 +2036,7 @@ CREATE TRIGGER trg_reference_token_identity_immutable BEFORE UPDATE OR DELETE ON
 CREATE TRIGGER trg_reference_token_revoke BEFORE UPDATE ON oauth.reference_access_token FOR EACH ROW
     EXECUTE FUNCTION oauth.fn_reference_token_revoke_guard();
 CREATE TRIGGER trg_session_terminal BEFORE UPDATE ON oauth.user_session FOR EACH ROW
-    EXECUTE FUNCTION core.fn_terminal_state_guard('session_state', 'EXPIRED', 'COMPROMISED', 'REVOKED');
+    EXECUTE FUNCTION core.fn_terminal_state_guard('session_state', 'EXPIRED', 'REVOKED');
 CREATE TRIGGER trg_token_family_terminal BEFORE UPDATE ON oauth.token_family FOR EACH ROW
     EXECUTE FUNCTION core.fn_terminal_state_guard('token_family_state', 'EXPIRED', 'COMPROMISED', 'REVOKED');
 CREATE TRIGGER trg_authorization_code_terminal BEFORE UPDATE ON oauth.authorization_code FOR EACH ROW
@@ -2565,7 +2586,2029 @@ CREATE TRIGGER trg_zz_message_send_immutable BEFORE UPDATE OR DELETE ON messagin
     EXECUTE FUNCTION messaging.fn_message_send_immutable_guard();
 
 -- -----------------------------------------------------------------------------
--- 8. 为所有外键自动补齐前导列索引
+-- 8. 补齐蓝图明确状态机、状态时间与不可变上下文
+-- -----------------------------------------------------------------------------
+
+ALTER TABLE authn.login_transaction
+    ADD COLUMN identified_at timestamptz NULL,
+    ADD COLUMN partially_authenticated_at timestamptz NULL,
+    ADD COLUMN pending_consent_at timestamptz NULL,
+    ADD COLUMN expired_at timestamptz NULL,
+    ADD COLUMN blocked_at timestamptz NULL,
+    ADD COLUMN abandon_reason_code text NULL,
+    ADD CONSTRAINT fk_login_transaction_risk FOREIGN KEY (risk_assessment_id) REFERENCES risk.risk_assessment(id),
+    ADD CONSTRAINT ck_login_transaction_expired CHECK ((login_transaction_state = 'EXPIRED') = (expired_at IS NOT NULL)),
+    ADD CONSTRAINT ck_login_transaction_abandoned CHECK (
+        (login_transaction_state = 'ABANDONED') = (abandoned_at IS NOT NULL)
+        AND (login_transaction_state <> 'ABANDONED' OR abandon_reason_code IS NOT NULL)
+    ),
+    ADD CONSTRAINT ck_login_transaction_blocked_time CHECK ((login_transaction_state = 'BLOCKED') = (blocked_at IS NOT NULL));
+
+ALTER TABLE iam.identifier
+    ADD COLUMN state_reason_code text NULL,
+    ADD CONSTRAINT ck_identifier_verified_history CHECK (
+        identifier_state = 'PENDING' OR verified_at IS NOT NULL
+    ),
+    ADD CONSTRAINT ck_identifier_unbound_history CHECK (
+        identifier_state NOT IN ('UNBOUND', 'QUARANTINED', 'RELEASED') OR unbound_at IS NOT NULL
+    ),
+    ADD CONSTRAINT ck_identifier_released CHECK ((identifier_state = 'RELEASED') = (released_at IS NOT NULL));
+
+ALTER TABLE core.async_operation
+    ADD COLUMN blocked_at timestamptz NULL,
+    ADD COLUMN partial_at timestamptz NULL,
+    ADD CONSTRAINT ck_async_operation_started CHECK (operation_state NOT IN ('RUNNING', 'BLOCKED', 'PARTIAL', 'COMPLETED', 'FAILED') OR started_at IS NOT NULL),
+    ADD CONSTRAINT ck_async_operation_blocked_time CHECK (operation_state <> 'BLOCKED' OR blocked_at IS NOT NULL),
+    ADD CONSTRAINT ck_async_operation_partial_time CHECK (operation_state <> 'PARTIAL' OR partial_at IS NOT NULL),
+    ADD CONSTRAINT ck_async_operation_failed CHECK (operation_state <> 'FAILED' OR failure_code IS NOT NULL);
+
+ALTER TABLE oauth.device
+    ADD COLUMN state_reason_code text NULL,
+    ADD COLUMN trust_evidence_hash bytea NULL,
+    ADD COLUMN loss_reason_code text NULL,
+    ADD COLUMN loss_clear_evidence_hash bytea NULL,
+    ADD CONSTRAINT ck_device_trust_evidence CHECK (trust_evidence_hash IS NULL OR octet_length(trust_evidence_hash) = 32),
+    ADD CONSTRAINT ck_device_loss_clear_evidence CHECK (loss_clear_evidence_hash IS NULL OR octet_length(loss_clear_evidence_hash) = 32),
+    ADD CONSTRAINT ck_device_retired CHECK (device_lifecycle_state <> 'RETIRED' OR retired_at IS NOT NULL),
+    ADD CONSTRAINT ck_device_revoked CHECK (
+        (device_lifecycle_state = 'REVOKED') = (revoked_at IS NOT NULL)
+        AND (device_lifecycle_state <> 'REVOKED' OR revoke_reason_code IS NOT NULL)
+    );
+
+ALTER TABLE privacy.privacy_request
+    ADD COLUMN started_at timestamptz NULL,
+    ADD COLUMN blocked_at timestamptz NULL,
+    ADD COLUMN partial_at timestamptz NULL,
+    ADD CONSTRAINT ck_privacy_request_verified CHECK (request_state IN ('SUBMITTED', 'REJECTED') OR verified_at IS NOT NULL),
+    ADD CONSTRAINT ck_privacy_request_started CHECK (request_state NOT IN ('IN_PROGRESS', 'BLOCKED', 'PARTIAL', 'COMPLETED') OR started_at IS NOT NULL),
+    ADD CONSTRAINT ck_privacy_request_blocked_time CHECK (request_state <> 'BLOCKED' OR blocked_at IS NOT NULL),
+    ADD CONSTRAINT ck_privacy_request_partial_time CHECK (request_state <> 'PARTIAL' OR partial_at IS NOT NULL);
+
+ALTER TABLE migration.migration_batch
+    ADD COLUMN paused_from_state text NULL,
+    ADD COLUMN paused_at timestamptz NULL,
+    ADD COLUMN rolled_back_at timestamptz NULL,
+    ADD CONSTRAINT ck_migration_batch_paused_from CHECK (
+        paused_from_state IS NULL OR paused_from_state IN ('DISCOVERED', 'CLEANSED', 'MAPPED', 'SHADOW', 'CANARY', 'CUTOVER', 'OBSERVING')
+    ),
+    ADD CONSTRAINT ck_migration_batch_paused_state CHECK (
+        migration_batch_state <> 'PAUSED' OR (paused_from_state IS NOT NULL AND paused_at IS NOT NULL)
+    ),
+    ADD CONSTRAINT ck_migration_batch_rolled_back CHECK ((migration_batch_state = 'ROLLED_BACK') = (rolled_back_at IS NOT NULL));
+
+ALTER TABLE authn.verification_challenge
+    ADD COLUMN risk_assessment_id uuid NOT NULL,
+    ADD COLUMN risk_context_hash bytea NOT NULL,
+    ADD COLUMN expired_at timestamptz NULL,
+    ADD COLUMN cancelled_at timestamptz NULL,
+    ADD COLUMN state_reason_code text NULL,
+    ADD CONSTRAINT fk_verification_challenge_risk FOREIGN KEY (risk_assessment_id) REFERENCES risk.risk_assessment(id),
+    ADD CONSTRAINT ck_verification_challenge_risk_hash CHECK (octet_length(risk_context_hash) = 32),
+    ADD CONSTRAINT ck_verification_challenge_target CHECK (num_nonnulls(user_id, target_identifier_id, target_blind_index) >= 1),
+    ADD CONSTRAINT ck_verification_challenge_verified CHECK ((challenge_state IN ('VERIFIED', 'CONSUMED')) = (verified_at IS NOT NULL)),
+    ADD CONSTRAINT ck_verification_challenge_expired CHECK ((challenge_state = 'EXPIRED') = (expired_at IS NOT NULL)),
+    ADD CONSTRAINT ck_verification_challenge_locked CHECK ((challenge_state = 'LOCKED') = (locked_at IS NOT NULL)),
+    ADD CONSTRAINT ck_verification_challenge_cancelled CHECK ((challenge_state = 'CANCELLED') = (cancelled_at IS NOT NULL)),
+    ADD CONSTRAINT ck_verification_challenge_superseded CHECK (superseded_by_id IS NULL OR challenge_state = 'CANCELLED');
+
+ALTER TABLE org.tenant
+    ADD COLUMN suspended_at timestamptz NULL,
+    ADD COLUMN state_reason_code text NULL,
+    ADD CONSTRAINT ck_tenant_activation CHECK (tenant_state <> 'ACTIVE' OR activated_at IS NOT NULL),
+    ADD CONSTRAINT ck_tenant_closing CHECK (tenant_state NOT IN ('CLOSING', 'CLOSED') OR (closing_at IS NOT NULL AND close_operation_id IS NOT NULL));
+
+ALTER TABLE org.organization
+    ADD COLUMN suspended_at timestamptz NULL,
+    ADD COLUMN state_reason_code text NULL;
+
+ALTER TABLE org.membership
+    ADD COLUMN rejected_at timestamptz NULL,
+    ADD COLUMN state_expired_at timestamptz NULL,
+    ADD CONSTRAINT ck_membership_rejected CHECK ((membership_state = 'REJECTED') = (rejected_at IS NOT NULL)),
+    ADD CONSTRAINT ck_membership_expired_state CHECK ((membership_state = 'EXPIRED') = (state_expired_at IS NOT NULL));
+
+ALTER TABLE org.invitation
+    ADD COLUMN state_expired_at timestamptz NULL,
+    ADD COLUMN state_reason_code text NULL,
+    ADD COLUMN creation_authorization_decision_id uuid NOT NULL,
+    ADD COLUMN acceptance_authorization_decision_id uuid NULL,
+    ADD CONSTRAINT fk_invitation_creation_decision FOREIGN KEY (creation_authorization_decision_id) REFERENCES authz.authorization_decision(id),
+    ADD CONSTRAINT fk_invitation_acceptance_decision FOREIGN KEY (acceptance_authorization_decision_id) REFERENCES authz.authorization_decision(id),
+    ADD CONSTRAINT ck_invitation_decision_distinct CHECK (
+        acceptance_authorization_decision_id IS NULL OR acceptance_authorization_decision_id <> creation_authorization_decision_id
+    ),
+    ADD CONSTRAINT ck_invitation_rejected CHECK ((invitation_state = 'REJECTED') = (rejected_at IS NOT NULL)),
+    ADD CONSTRAINT ck_invitation_expired_state CHECK ((invitation_state = 'EXPIRED') = (state_expired_at IS NOT NULL)),
+    ADD CONSTRAINT ck_invitation_revoked CHECK ((invitation_state = 'REVOKED') = (revoked_at IS NOT NULL));
+
+ALTER TABLE assurance.delegation
+    ADD COLUMN delegation_context_hash bytea NOT NULL,
+    ADD COLUMN revoked_by_ref text NULL,
+    ADD COLUMN revoke_reason_code text NULL,
+    ADD CONSTRAINT ck_delegation_context_hash CHECK (octet_length(delegation_context_hash) = 32),
+    ADD CONSTRAINT ck_delegation_revoke_evidence CHECK (
+        (revoked_at IS NULL) = (revoked_by_ref IS NULL)
+        AND (revoked_at IS NULL) = (revoke_reason_code IS NULL)
+    );
+
+ALTER TABLE workload.machine_principal
+    ADD COLUMN last_revalidated_at timestamptz NULL,
+    ADD COLUMN last_revalidation_evidence_hash bytea NULL,
+    ADD COLUMN state_reason_code text NULL,
+    ADD CONSTRAINT ck_machine_revalidation_hash CHECK (last_revalidation_evidence_hash IS NULL OR octet_length(last_revalidation_evidence_hash) = 32),
+    ADD CONSTRAINT ck_machine_active_revalidation CHECK (
+        principal_state <> 'ACTIVE' OR (last_revalidated_at IS NOT NULL AND last_revalidation_evidence_hash IS NOT NULL)
+    );
+
+ALTER TABLE workload.machine_credential
+    DROP CONSTRAINT ck_machine_credential_material,
+    ADD COLUMN replaces_credential_id uuid NULL,
+    ADD COLUMN compromised_at timestamptz NULL,
+    ADD COLUMN state_reason_code text NULL,
+    ADD CONSTRAINT uq_machine_credential_replaces UNIQUE (replaces_credential_id),
+    ADD CONSTRAINT fk_machine_credential_replaces FOREIGN KEY (replaces_credential_id) REFERENCES workload.machine_credential(id),
+    ADD CONSTRAINT ck_machine_credential_not_self_replacing CHECK (replaces_credential_id IS NULL OR replaces_credential_id <> id),
+    ADD CONSTRAINT ck_machine_credential_material_by_kind CHECK (
+        (credential_kind = 'PRIVATE_KEY_JWT' AND key_asset_id IS NOT NULL
+            AND certificate_thumbprint IS NULL AND secret_hash IS NULL)
+        OR (credential_kind = 'MTLS' AND certificate_thumbprint IS NOT NULL
+            AND secret_hash IS NULL AND public_material IS NULL)
+        OR (credential_kind = 'WORKLOAD_FEDERATION' AND public_material IS NOT NULL
+            AND certificate_thumbprint IS NULL AND secret_hash IS NULL AND key_asset_id IS NULL)
+        OR (credential_kind = 'SECRET' AND secret_hash IS NOT NULL
+            AND certificate_thumbprint IS NULL AND public_material IS NULL AND key_asset_id IS NULL)
+    ),
+    ADD CONSTRAINT ck_machine_credential_material_hashes CHECK (
+        (certificate_thumbprint IS NULL OR octet_length(certificate_thumbprint) = 32)
+        AND (secret_hash IS NULL OR octet_length(secret_hash) >= 32)
+    ),
+    ADD CONSTRAINT ck_machine_credential_key_id CHECK (
+        credential_kind <> 'PRIVATE_KEY_JWT' OR NULLIF(btrim(key_id), '') IS NOT NULL
+    ),
+    ADD CONSTRAINT ck_machine_credential_usable CHECK (
+        credential_state NOT IN ('ACTIVE', 'ROTATING') OR (revoked_at IS NULL AND compromised_at IS NULL)
+    ),
+    ADD CONSTRAINT ck_machine_credential_compromised CHECK (credential_state <> 'COMPROMISED' OR compromised_at IS NOT NULL),
+    ADD CONSTRAINT ck_machine_credential_revoked CHECK (credential_state <> 'REVOKED' OR revoked_at IS NOT NULL);
+
+ALTER TABLE workload.trust_bundle
+    ALTER COLUMN approval_case_id DROP NOT NULL,
+    ADD COLUMN bundle_context_hash bytea NOT NULL,
+    ADD COLUMN validated_at timestamptz NULL,
+    ADD COLUMN approved_at timestamptz NULL,
+    ADD COLUMN verify_only_at timestamptz NULL,
+    ADD COLUMN revoked_at timestamptz NULL,
+    ADD COLUMN retired_at timestamptz NULL,
+    ADD COLUMN state_reason_code text NULL,
+    ADD CONSTRAINT ck_trust_bundle_context_hash CHECK (octet_length(bundle_context_hash) = 32),
+    ADD CONSTRAINT ck_trust_bundle_approval CHECK (
+        bundle_state NOT IN ('APPROVED', 'ACTIVE', 'VERIFY_ONLY', 'RETIRED') OR approval_case_id IS NOT NULL
+    ),
+    ADD CONSTRAINT ck_trust_bundle_active CHECK (
+        bundle_state NOT IN ('ACTIVE', 'VERIFY_ONLY', 'RETIRED') OR active_from IS NOT NULL
+    ),
+    ADD CONSTRAINT ck_trust_bundle_window CHECK (
+        active_from IS NULL OR active_until IS NULL OR active_until > active_from
+    ),
+    ADD CONSTRAINT ck_trust_bundle_revoked CHECK (bundle_state <> 'REVOKED' OR revoked_at IS NOT NULL),
+    ADD CONSTRAINT ck_trust_bundle_retired CHECK (bundle_state <> 'RETIRED' OR retired_at IS NOT NULL);
+
+ALTER TABLE workload.workload_attestation
+    ADD COLUMN expired_at timestamptz NULL,
+    ADD COLUMN revoke_reason_code text NULL,
+    ADD CONSTRAINT ck_workload_attestation_verified CHECK (
+        attestation_state NOT IN ('VERIFIED', 'CREDENTIAL_ISSUED', 'EXPIRED', 'REVOKED') OR verified_at IS NOT NULL
+    ),
+    ADD CONSTRAINT ck_workload_attestation_issued CHECK (
+        attestation_state NOT IN ('CREDENTIAL_ISSUED', 'EXPIRED', 'REVOKED') OR credential_issued_at IS NOT NULL
+    ),
+    ADD CONSTRAINT ck_workload_attestation_expired_state CHECK ((attestation_state = 'EXPIRED') = (expired_at IS NOT NULL)),
+    ADD CONSTRAINT ck_workload_attestation_revoked_state CHECK ((attestation_state = 'REVOKED') = (revoked_at IS NOT NULL));
+
+ALTER TABLE crypto.certificate_asset
+    ADD COLUMN activated_at timestamptz NULL,
+    ADD COLUMN expired_at timestamptz NULL,
+    ADD CONSTRAINT ck_certificate_active CHECK (certificate_state NOT IN ('ACTIVE', 'GRACE') OR activated_at IS NOT NULL),
+    ADD CONSTRAINT ck_certificate_expired CHECK ((certificate_state = 'EXPIRED') = (expired_at IS NOT NULL));
+
+ALTER TABLE crypto.jwks_release
+    ADD COLUMN activated_at timestamptz NULL,
+    ADD COLUMN superseded_at timestamptz NULL,
+    ADD COLUMN revoked_at timestamptz NULL,
+    ADD COLUMN revoke_reason_code text NULL,
+    ADD CONSTRAINT ck_jwks_release_published CHECK (release_state IN ('DRAFT', 'REVOKED') OR published_at IS NOT NULL),
+    ADD CONSTRAINT ck_jwks_release_active CHECK (release_state <> 'ACTIVE' OR activated_at IS NOT NULL),
+    ADD CONSTRAINT ck_jwks_release_superseded CHECK ((release_state = 'SUPERSEDED') = (superseded_at IS NOT NULL)),
+    ADD CONSTRAINT ck_jwks_release_revoked CHECK (
+        (release_state = 'REVOKED') = (revoked_at IS NOT NULL)
+        AND (release_state <> 'REVOKED' OR revoke_reason_code IS NOT NULL)
+    );
+
+ALTER TABLE control.security_exception
+    ALTER COLUMN approval_case_id DROP NOT NULL,
+    ADD COLUMN tenant_id uuid NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000',
+    ADD COLUMN exception_context_hash bytea NOT NULL,
+    ADD COLUMN approved_at timestamptz NULL,
+    ADD COLUMN activated_at timestamptz NULL,
+    ADD COLUMN expired_at timestamptz NULL,
+    ADD COLUMN revoked_at timestamptz NULL,
+    ADD COLUMN state_reason_code text NULL,
+    ADD CONSTRAINT fk_security_exception_tenant FOREIGN KEY (tenant_id) REFERENCES org.tenant(id),
+    ADD CONSTRAINT ck_security_exception_context_hash CHECK (octet_length(exception_context_hash) = 32),
+    ADD CONSTRAINT ck_security_exception_approved CHECK (
+        exception_state NOT IN ('APPROVED', 'ACTIVE', 'TIGHTENED') OR (approved_at IS NOT NULL AND approval_case_id IS NOT NULL)
+    ),
+    ADD CONSTRAINT ck_security_exception_active CHECK (exception_state <> 'ACTIVE' OR activated_at IS NOT NULL),
+    ADD CONSTRAINT ck_security_exception_expired_state CHECK ((exception_state = 'EXPIRED') = (expired_at IS NOT NULL)),
+    ADD CONSTRAINT ck_security_exception_revoked_state CHECK ((exception_state = 'REVOKED') = (revoked_at IS NOT NULL));
+
+ALTER TABLE control.break_glass_grant
+    ALTER COLUMN approval_case_id DROP NOT NULL,
+    ADD COLUMN grant_context_hash bytea NOT NULL,
+    ADD COLUMN expired_at timestamptz NULL,
+    ADD COLUMN revoke_reason_code text NULL,
+    ADD CONSTRAINT ck_break_glass_context_hash CHECK (octet_length(grant_context_hash) = 32),
+    ADD CONSTRAINT ck_break_glass_approval CHECK (grant_state <> 'ACTIVE' OR approval_case_id IS NOT NULL),
+    ADD CONSTRAINT ck_break_glass_expired CHECK ((grant_state = 'EXPIRED') = (expired_at IS NOT NULL)),
+    ADD CONSTRAINT ck_break_glass_revoked CHECK (
+        (grant_state = 'REVOKED') = (revoked_at IS NOT NULL)
+        AND (grant_state <> 'REVOKED' OR revoke_reason_code IS NOT NULL)
+    );
+
+CREATE OR REPLACE FUNCTION iam.fn_user_lifecycle_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE v_allowed boolean := false;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.lifecycle_state <> 'PROVISIONAL'
+           OR num_nonnulls(NEW.activated_at, NEW.dormant_at, NEW.deletion_requested_at,
+                           NEW.anonymized_at, NEW.erased_at, NEW.merged_into_user_id) <> 0 THEN
+            RAISE EXCEPTION 'USER_INITIAL_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF NEW.id <> OLD.id OR NEW.public_id <> OLD.public_id OR NEW.subject_kind <> OLD.subject_kind
+       OR NEW.creation_source <> OLD.creation_source OR NEW.creation_client_id IS DISTINCT FROM OLD.creation_client_id THEN
+        RAISE EXCEPTION 'USER_IDENTITY_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    IF OLD.lifecycle_state = NEW.lifecycle_state THEN
+        IF (NEW.activated_at, NEW.dormant_at, NEW.deletion_requested_at, NEW.anonymized_at,
+            NEW.erased_at, NEW.merged_into_user_id, NEW.terminal_reason_code)
+           IS DISTINCT FROM
+           (OLD.activated_at, OLD.dormant_at, OLD.deletion_requested_at, OLD.anonymized_at,
+            OLD.erased_at, OLD.merged_into_user_id, OLD.terminal_reason_code) THEN
+            RAISE EXCEPTION 'USER_LIFECYCLE_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF OLD.lifecycle_state = 'PROVISIONAL' AND NEW.lifecycle_state = 'ACTIVE' THEN
+        v_allowed := true;
+        IF NOT EXISTS (SELECT 1 FROM iam.identifier i WHERE i.user_id = NEW.id AND i.identifier_state = 'VERIFIED') THEN
+            RAISE EXCEPTION 'USER_VERIFIED_IDENTITY_REQUIRED' USING ERRCODE = '23514';
+        END IF;
+        NEW.activated_at := clock_timestamp();
+    ELSIF OLD.lifecycle_state = 'PROVISIONAL' AND NEW.lifecycle_state = 'ERASED' THEN
+        v_allowed := true;
+        IF EXISTS (SELECT 1 FROM org.membership m WHERE m.user_id = NEW.id)
+           OR EXISTS (SELECT 1 FROM oauth.authorization_grant g WHERE g.subject_kind = 'USER' AND g.subject_id = NEW.id)
+           OR EXISTS (SELECT 1 FROM authn.authenticator a WHERE a.user_id = NEW.id AND a.authenticator_state <> 'REVOKED')
+           OR EXISTS (SELECT 1 FROM federation.external_identity e WHERE e.user_id = NEW.id AND e.binding_state NOT IN ('UNLINKED', 'TOMBSTONED')) THEN
+            RAISE EXCEPTION 'PROVISIONAL_USER_HAS_DOWNSTREAM_FACTS' USING ERRCODE = '23514';
+        END IF;
+        NEW.erased_at := clock_timestamp();
+    ELSIF OLD.lifecycle_state = 'ACTIVE' AND NEW.lifecycle_state = 'DORMANT' THEN
+        v_allowed := true; NEW.dormant_at := clock_timestamp();
+    ELSIF OLD.lifecycle_state = 'DORMANT' AND NEW.lifecycle_state = 'ACTIVE' THEN
+        v_allowed := true;
+    ELSIF OLD.lifecycle_state IN ('ACTIVE', 'DORMANT') AND NEW.lifecycle_state = 'DELETION_PENDING' THEN
+        v_allowed := true;
+        IF NOT EXISTS (
+            SELECT 1 FROM iam.account_deletion d
+             WHERE d.user_id = NEW.id AND d.completed_at IS NULL AND d.withdrawn_at IS NULL
+        ) THEN RAISE EXCEPTION 'USER_DELETION_OPERATION_REQUIRED' USING ERRCODE = '23514'; END IF;
+        NEW.deletion_requested_at := clock_timestamp();
+    ELSIF OLD.lifecycle_state = 'DELETION_PENDING' AND NEW.lifecycle_state = 'ACTIVE' THEN
+        v_allowed := true;
+        IF NOT EXISTS (
+            SELECT 1 FROM iam.account_deletion d
+             WHERE d.user_id = NEW.id AND d.withdrawn_at IS NOT NULL
+               AND d.withdrawal_auth_time IS NOT NULL AND d.irreversible_at IS NULL
+        ) THEN RAISE EXCEPTION 'USER_DELETION_WITHDRAWAL_EVIDENCE_REQUIRED' USING ERRCODE = '23514'; END IF;
+    ELSIF OLD.lifecycle_state = 'DELETION_PENDING' AND NEW.lifecycle_state = 'DELETION_BLOCKED' THEN
+        v_allowed := true;
+        IF NOT EXISTS (SELECT 1 FROM iam.account_deletion d WHERE d.user_id = NEW.id AND d.blocked_at IS NOT NULL) THEN
+            RAISE EXCEPTION 'USER_DELETION_BLOCK_EVIDENCE_REQUIRED' USING ERRCODE = '23514';
+        END IF;
+    ELSIF OLD.lifecycle_state = 'DELETION_BLOCKED' AND NEW.lifecycle_state = 'DELETION_PENDING' THEN
+        v_allowed := true;
+        IF NOT EXISTS (SELECT 1 FROM iam.account_deletion d WHERE d.user_id = NEW.id AND d.resumed_at IS NOT NULL AND d.blocked_at IS NOT NULL) THEN
+            RAISE EXCEPTION 'USER_DELETION_RESUME_EVIDENCE_REQUIRED' USING ERRCODE = '23514';
+        END IF;
+    ELSIF OLD.lifecycle_state = 'DELETION_PENDING' AND NEW.lifecycle_state IN ('ANONYMIZED', 'ERASED') THEN
+        v_allowed := true;
+        IF NOT EXISTS (
+            SELECT 1 FROM iam.account_deletion d
+             WHERE d.user_id = NEW.id AND d.completed_at IS NOT NULL
+               AND d.completion_kind = NEW.lifecycle_state AND d.completion_proof_ref IS NOT NULL
+        ) THEN RAISE EXCEPTION 'USER_DELETION_COMPLETION_EVIDENCE_REQUIRED' USING ERRCODE = '23514'; END IF;
+        IF NEW.lifecycle_state = 'ANONYMIZED' THEN NEW.anonymized_at := clock_timestamp(); ELSE NEW.erased_at := clock_timestamp(); END IF;
+    ELSIF OLD.lifecycle_state = 'ACTIVE' AND NEW.lifecycle_state = 'MERGED' THEN
+        v_allowed := true;
+        IF NEW.merged_into_user_id IS NULL OR NOT EXISTS (
+            SELECT 1 FROM iam.account_merge m
+             WHERE m.source_user_id = NEW.id AND m.target_user_id = NEW.merged_into_user_id
+               AND m.merge_state = 'COMPLETED' AND m.completed_at IS NOT NULL AND m.irreversible_at IS NOT NULL
+        ) THEN RAISE EXCEPTION 'USER_MERGE_COMPLETION_EVIDENCE_REQUIRED' USING ERRCODE = '23514'; END IF;
+    END IF;
+    IF NOT v_allowed THEN RAISE EXCEPTION 'INVALID_STATE_TRANSITION: User % -> %', OLD.lifecycle_state, NEW.lifecycle_state USING ERRCODE = '23514'; END IF;
+    IF NEW.lifecycle_state IN ('ANONYMIZED', 'ERASED', 'MERGED') AND NULLIF(btrim(NEW.terminal_reason_code), '') IS NULL THEN
+        RAISE EXCEPTION 'USER_TERMINAL_REASON_REQUIRED' USING ERRCODE = '23514';
+    END IF;
+    NEW.user_security_epoch := GREATEST(NEW.user_security_epoch, OLD.user_security_epoch + 1);
+    IF NEW.lifecycle_state IN ('DELETION_PENDING', 'ANONYMIZED', 'ERASED', 'MERGED') THEN
+        UPDATE oauth.user_session SET session_state = 'REVOKED', revoke_reason_code = 'USER_LIFECYCLE_CHANGED'
+         WHERE user_id = NEW.id AND session_state IN ('ACTIVE', 'COMPROMISED');
+        UPDATE oauth.token_family SET token_family_state = 'REVOKED', revoke_reason_code = 'USER_LIFECYCLE_CHANGED'
+         WHERE subject_kind = 'USER' AND subject_id = NEW.id AND token_family_state = 'ACTIVE';
+        UPDATE oauth.authorization_grant
+           SET grant_state = 'REVOKED', revoke_reason_code = 'USER_LIFECYCLE_CHANGED', revoked_by_ref = 'SYSTEM'
+         WHERE subject_kind = 'USER' AND subject_id = NEW.id AND grant_state = 'ACTIVE';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION iam.fn_user_lifecycle_guard() IS 'Global User 按蓝图生命周期推进；激活、注销撤回/阻断/完成和合并均要求对应证据，安全状态变化推进 epoch 并撤销会话、Family 与 Grant。';
+
+CREATE OR REPLACE FUNCTION iam.fn_identifier_state_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE v_allowed boolean := false;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.identifier_state <> 'PENDING'
+           OR num_nonnulls(NEW.verified_at, NEW.unbound_at, NEW.quarantine_until, NEW.released_at) <> 0 THEN
+            RAISE EXCEPTION 'IDENTIFIER_INITIAL_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF (NEW.user_id, NEW.identifier_type, NEW.uniqueness_scope, NEW.scope_ref_id,
+        NEW.ownership_digest, NEW.ownership_key_version, NEW.normalization_version, NEW.normalization_profile_code)
+       IS DISTINCT FROM
+       (OLD.user_id, OLD.identifier_type, OLD.uniqueness_scope, OLD.scope_ref_id,
+        OLD.ownership_digest, OLD.ownership_key_version, OLD.normalization_version, OLD.normalization_profile_code) THEN
+        RAISE EXCEPTION 'IDENTIFIER_OWNERSHIP_CONTEXT_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    IF OLD.identifier_state = NEW.identifier_state THEN
+        IF (NEW.verified_at, NEW.verification_method, NEW.unbound_at, NEW.quarantine_until,
+            NEW.released_at, NEW.state_reason_code)
+           IS DISTINCT FROM
+           (OLD.verified_at, OLD.verification_method, OLD.unbound_at, OLD.quarantine_until,
+            OLD.released_at, OLD.state_reason_code) THEN
+            RAISE EXCEPTION 'IDENTIFIER_STATE_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF OLD.identifier_state = 'PENDING' AND NEW.identifier_state = 'VERIFIED' THEN
+        v_allowed := true;
+        IF NULLIF(btrim(NEW.verification_method), '') IS NULL OR NOT EXISTS (
+            SELECT 1 FROM iam.user_account u WHERE u.id = NEW.user_id
+               AND u.lifecycle_state IN ('PROVISIONAL', 'ACTIVE', 'DORMANT')
+        ) THEN RAISE EXCEPTION 'IDENTIFIER_VERIFICATION_CONTEXT_INVALID' USING ERRCODE = '23514'; END IF;
+        NEW.verified_at := clock_timestamp();
+    ELSIF OLD.identifier_state = 'VERIFIED' AND NEW.identifier_state = 'UNBOUND' THEN
+        v_allowed := true; NEW.unbound_at := clock_timestamp(); NEW.is_primary := false;
+    ELSIF OLD.identifier_state = 'UNBOUND' AND NEW.identifier_state = 'QUARANTINED' THEN
+        v_allowed := true;
+        IF NEW.quarantine_until IS NULL OR NEW.quarantine_until <= clock_timestamp() THEN RAISE EXCEPTION 'IDENTIFIER_QUARANTINE_WINDOW_REQUIRED' USING ERRCODE = '23514'; END IF;
+        INSERT INTO iam.identifier_tombstone(
+            identifier_type, uniqueness_scope, scope_ref_id, value_blind_index, blind_index_key_version,
+            former_user_id, ownership_digest, ownership_key_version, quarantine_until
+        ) VALUES (
+            NEW.identifier_type, NEW.uniqueness_scope, NEW.scope_ref_id, NEW.value_blind_index, NEW.blind_index_key_version,
+            NEW.user_id, NEW.ownership_digest, NEW.ownership_key_version, NEW.quarantine_until
+        ) ON CONFLICT (identifier_type, uniqueness_scope, scope_ref_id, ownership_digest)
+          DO UPDATE SET quarantine_until = GREATEST(iam.identifier_tombstone.quarantine_until, EXCLUDED.quarantine_until);
+    ELSIF OLD.identifier_state = 'QUARANTINED' AND NEW.identifier_state = 'RELEASED' THEN
+        v_allowed := true;
+        IF OLD.quarantine_until > clock_timestamp() THEN RAISE EXCEPTION 'IDENTIFIER_QUARANTINE_NOT_FINISHED' USING ERRCODE = '23514'; END IF;
+        NEW.released_at := clock_timestamp();
+        UPDATE iam.identifier_tombstone SET released_at = NEW.released_at
+         WHERE identifier_type = NEW.identifier_type AND uniqueness_scope = NEW.uniqueness_scope
+           AND scope_ref_id = NEW.scope_ref_id AND ownership_digest = NEW.ownership_digest;
+    END IF;
+    IF NOT v_allowed THEN RAISE EXCEPTION 'INVALID_STATE_TRANSITION: Identifier % -> %', OLD.identifier_state, NEW.identifier_state USING ERRCODE = '23514'; END IF;
+    IF NEW.identifier_state IN ('UNBOUND', 'QUARANTINED', 'RELEASED') AND NULLIF(btrim(NEW.state_reason_code), '') IS NULL THEN
+        RAISE EXCEPTION 'IDENTIFIER_STATE_REASON_REQUIRED' USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION iam.fn_identifier_state_guard() IS 'Identifier 强制 PENDING→VERIFIED→UNBOUND→QUARANTINED→RELEASED；所有权摘要不可改写，隔离时自动写永久 Tombstone。';
+
+CREATE OR REPLACE FUNCTION core.fn_operation_state_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE v_allowed boolean := false;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.operation_state <> 'PENDING'
+           OR num_nonnulls(NEW.started_at, NEW.blocked_at, NEW.partial_at, NEW.completed_at, NEW.cancelled_at, NEW.irreversible_at) <> 0 THEN
+            RAISE EXCEPTION 'OPERATION_INITIAL_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF (NEW.operation_kind, NEW.capability_id, NEW.request_hash, NEW.idempotency_key,
+        NEW.subject_kind, NEW.subject_ref, NEW.actor_kind, NEW.actor_ref, NEW.tenant_id,
+        NEW.business_line_id, NEW.saga_type, NEW.policy_version)
+       IS DISTINCT FROM
+       (OLD.operation_kind, OLD.capability_id, OLD.request_hash, OLD.idempotency_key,
+        OLD.subject_kind, OLD.subject_ref, OLD.actor_kind, OLD.actor_ref, OLD.tenant_id,
+        OLD.business_line_id, OLD.saga_type, OLD.policy_version) THEN
+        RAISE EXCEPTION 'OPERATION_REQUEST_CONTEXT_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    IF OLD.irreversible_at IS NOT NULL AND NEW.irreversible_at IS DISTINCT FROM OLD.irreversible_at THEN
+        RAISE EXCEPTION 'OPERATION_IRREVERSIBLE_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    IF OLD.irreversible_at IS NULL AND NEW.irreversible_at IS NOT NULL THEN
+        IF OLD.operation_state NOT IN ('RUNNING', 'BLOCKED', 'PARTIAL') OR NEW.operation_state <> OLD.operation_state THEN
+            RAISE EXCEPTION 'OPERATION_IRREVERSIBLE_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+        NEW.irreversible_at := clock_timestamp(); NEW.can_cancel := false;
+    END IF;
+    IF OLD.operation_state = NEW.operation_state THEN
+        IF (NEW.started_at, NEW.blocked_at, NEW.partial_at, NEW.completed_at, NEW.cancelled_at)
+           IS DISTINCT FROM (OLD.started_at, OLD.blocked_at, OLD.partial_at, OLD.completed_at, OLD.cancelled_at) THEN
+            RAISE EXCEPTION 'OPERATION_STATE_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF OLD.operation_state = 'PENDING' AND NEW.operation_state = 'RUNNING' THEN
+        v_allowed := true; NEW.started_at := clock_timestamp();
+    ELSIF OLD.operation_state IN ('BLOCKED', 'PARTIAL') AND NEW.operation_state = 'RUNNING' THEN
+        v_allowed := true;
+    ELSIF OLD.operation_state = 'RUNNING' AND NEW.operation_state = 'BLOCKED' THEN
+        v_allowed := true;
+        IF NULLIF(btrim(NEW.reason_code), '') IS NULL OR NOT NEW.requires_human_action THEN RAISE EXCEPTION 'OPERATION_BLOCK_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+        NEW.blocked_at := clock_timestamp();
+    ELSIF OLD.operation_state = 'RUNNING' AND NEW.operation_state = 'PARTIAL' THEN
+        v_allowed := true; NEW.partial_at := clock_timestamp();
+    ELSIF OLD.operation_state IN ('RUNNING', 'PARTIAL') AND NEW.operation_state IN ('COMPLETED', 'FAILED') THEN
+        v_allowed := true;
+        IF NEW.operation_state = 'FAILED' AND NULLIF(btrim(NEW.failure_code), '') IS NULL THEN RAISE EXCEPTION 'OPERATION_FAILURE_CODE_REQUIRED' USING ERRCODE = '23514'; END IF;
+        NEW.completed_at := clock_timestamp();
+    ELSIF OLD.operation_state IN ('PENDING', 'RUNNING', 'BLOCKED', 'PARTIAL') AND NEW.operation_state = 'CANCELLED' THEN
+        v_allowed := true;
+        IF OLD.irreversible_at IS NOT NULL OR NOT OLD.can_cancel THEN RAISE EXCEPTION 'OPERATION_NOT_CANCELLABLE' USING ERRCODE = '23514'; END IF;
+        NEW.cancelled_at := clock_timestamp(); NEW.can_cancel := false;
+    END IF;
+    IF NOT v_allowed THEN RAISE EXCEPTION 'INVALID_STATE_TRANSITION: Operation % -> %', OLD.operation_state, NEW.operation_state USING ERRCODE = '23514'; END IF;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION core.fn_operation_state_guard() IS 'Operation 强制按 PENDING、RUNNING、BLOCKED/PARTIAL、终态推进；请求上下文和不可逆边界不可改写，状态时间使用数据库时钟。';
+
+CREATE OR REPLACE FUNCTION oauth.fn_device_loss_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF OLD.device_loss_state = 'CLEAR' AND NEW.device_loss_state = 'LOST' THEN
+        IF NULLIF(btrim(NEW.loss_reason_code), '') IS NULL THEN RAISE EXCEPTION 'DEVICE_LOSS_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+        NEW.lost_at := clock_timestamp(); NEW.loss_cleared_at := NULL; NEW.device_trust_state := 'UNTRUSTED'; NEW.trust_expires_at := NULL;
+        UPDATE oauth.user_session SET session_state = 'REVOKED', revoke_reason_code = 'DEVICE_LOST'
+         WHERE device_id = NEW.id AND session_state IN ('ACTIVE', 'COMPROMISED');
+        UPDATE oauth.token_family SET token_family_state = 'REVOKED', revoke_reason_code = 'DEVICE_LOST'
+         WHERE device_id = NEW.id AND token_family_state = 'ACTIVE';
+    ELSIF OLD.device_loss_state = 'LOST' AND NEW.device_loss_state = 'CLEAR' THEN
+        IF NEW.loss_clear_evidence_hash IS NULL OR NEW.loss_clear_evidence_hash IS NOT DISTINCT FROM OLD.loss_clear_evidence_hash THEN
+            RAISE EXCEPTION 'DEVICE_LOSS_CLEAR_EVIDENCE_REQUIRED' USING ERRCODE = '23514';
+        END IF;
+        NEW.loss_cleared_at := clock_timestamp(); NEW.device_trust_state := 'UNTRUSTED'; NEW.trust_expires_at := NULL;
+    ELSIF OLD.device_loss_state <> NEW.device_loss_state THEN
+        RAISE EXCEPTION 'INVALID_STATE_TRANSITION: Device Loss % -> %', OLD.device_loss_state, NEW.device_loss_state USING ERRCODE = '23514';
+    ELSIF (NEW.lost_at, NEW.loss_cleared_at, NEW.loss_reason_code, NEW.loss_clear_evidence_hash)
+          IS DISTINCT FROM (OLD.lost_at, OLD.loss_cleared_at, OLD.loss_reason_code, OLD.loss_clear_evidence_hash) THEN
+        RAISE EXCEPTION 'DEVICE_LOSS_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION oauth.fn_device_loss_guard() IS '设备挂失要求原因并原子撤销关联 Session/Token Family；解除挂失要求新强验证/风险证据且不自动恢复 TRUSTED。';
+
+CREATE OR REPLACE FUNCTION oauth.fn_device_state_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE v_allowed boolean := false;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.device_lifecycle_state <> 'REGISTERED' OR NEW.device_trust_state <> 'UNTRUSTED' OR NEW.device_loss_state <> 'CLEAR'
+           OR num_nonnulls(NEW.trusted_at, NEW.lost_at, NEW.loss_cleared_at, NEW.retired_at, NEW.revoked_at,
+                           NEW.trust_evidence_hash, NEW.loss_clear_evidence_hash) <> 0 THEN
+            RAISE EXCEPTION 'DEVICE_INITIAL_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF NEW.user_id <> OLD.user_id OR NEW.fingerprint_hash <> OLD.fingerprint_hash THEN
+        RAISE EXCEPTION 'DEVICE_IDENTITY_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    IF OLD.device_lifecycle_state IN ('RETIRED', 'REVOKED') AND to_jsonb(NEW) IS DISTINCT FROM to_jsonb(OLD) THEN
+        RAISE EXCEPTION 'DEVICE_TERMINAL_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    IF OLD.device_lifecycle_state <> NEW.device_lifecycle_state THEN
+        IF OLD.device_lifecycle_state = 'REGISTERED' AND NEW.device_lifecycle_state IN ('RETIRED', 'REVOKED') THEN
+            v_allowed := true;
+            IF NULLIF(btrim(NEW.state_reason_code), '') IS NULL THEN RAISE EXCEPTION 'DEVICE_STATE_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+            NEW.device_trust_state := 'UNTRUSTED'; NEW.trust_expires_at := NULL;
+            IF NEW.device_lifecycle_state = 'RETIRED' THEN NEW.retired_at := clock_timestamp();
+            ELSE NEW.revoked_at := clock_timestamp(); NEW.revoke_reason_code := NEW.state_reason_code;
+            END IF;
+        END IF;
+        IF NOT v_allowed THEN RAISE EXCEPTION 'INVALID_STATE_TRANSITION: Device % -> %', OLD.device_lifecycle_state, NEW.device_lifecycle_state USING ERRCODE = '23514'; END IF;
+    ELSIF (NEW.retired_at, NEW.revoked_at, NEW.revoke_reason_code, NEW.state_reason_code)
+          IS DISTINCT FROM (OLD.retired_at, OLD.revoked_at, OLD.revoke_reason_code, OLD.state_reason_code) THEN
+        RAISE EXCEPTION 'DEVICE_LIFECYCLE_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+
+    IF OLD.device_trust_state <> NEW.device_trust_state THEN
+        IF NEW.device_trust_state = 'TRUSTED' THEN
+            IF NEW.device_lifecycle_state <> 'REGISTERED' OR NEW.device_loss_state <> 'CLEAR'
+               OR NEW.trust_expires_at IS NULL OR NEW.trust_expires_at <= clock_timestamp()
+               OR NEW.trust_evidence_hash IS NULL OR NEW.trust_evidence_hash IS NOT DISTINCT FROM OLD.trust_evidence_hash THEN
+                RAISE EXCEPTION 'DEVICE_TRUST_EVIDENCE_INVALID' USING ERRCODE = '23514';
+            END IF;
+            NEW.trusted_at := clock_timestamp();
+        ELSIF NEW.device_trust_state = 'UNTRUSTED' THEN
+            NEW.trust_expires_at := NULL;
+        ELSE RAISE EXCEPTION 'INVALID_DEVICE_TRUST_STATE' USING ERRCODE = '23514';
+        END IF;
+    ELSIF NEW.device_loss_state = OLD.device_loss_state
+       AND (NEW.trusted_at, NEW.trust_expires_at, NEW.trust_evidence_hash)
+           IS DISTINCT FROM (OLD.trusted_at, OLD.trust_expires_at, OLD.trust_evidence_hash) THEN
+        RAISE EXCEPTION 'DEVICE_TRUST_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION oauth.fn_device_state_guard() IS 'Device 的生命周期、可信和挂失维度保持正交；终态不可恢复，TRUSTED 必须有新证据和期限，挂失变更由专用守卫处理。';
+
+CREATE OR REPLACE FUNCTION privacy.fn_privacy_request_state_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE v_allowed boolean := false;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.request_state <> 'SUBMITTED'
+           OR num_nonnulls(NEW.verified_at, NEW.started_at, NEW.blocked_at, NEW.partial_at, NEW.completed_at, NEW.rejected_at) <> 0 THEN
+            RAISE EXCEPTION 'PRIVACY_REQUEST_INITIAL_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF (NEW.user_id, NEW.request_kind, NEW.operation_id, NEW.requested_scope, NEW.legal_deadline_at)
+       IS DISTINCT FROM (OLD.user_id, OLD.request_kind, OLD.operation_id, OLD.requested_scope, OLD.legal_deadline_at) THEN
+        RAISE EXCEPTION 'PRIVACY_REQUEST_CONTEXT_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    IF OLD.request_state = NEW.request_state THEN
+        IF (NEW.verified_at, NEW.started_at, NEW.blocked_at, NEW.partial_at, NEW.completed_at, NEW.rejected_at)
+           IS DISTINCT FROM (OLD.verified_at, OLD.started_at, OLD.blocked_at, OLD.partial_at, OLD.completed_at, OLD.rejected_at) THEN
+            RAISE EXCEPTION 'PRIVACY_REQUEST_STATE_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF OLD.request_state = 'SUBMITTED' AND NEW.request_state = 'IDENTITY_VERIFIED' THEN
+        v_allowed := true;
+        IF NEW.identity_verification_tx_id IS NULL OR NOT EXISTS (
+            SELECT 1 FROM authn.login_transaction tx
+             WHERE tx.id = NEW.identity_verification_tx_id AND tx.user_id = NEW.user_id
+               AND tx.login_transaction_state = 'COMPLETED' AND tx.expires_at > clock_timestamp()
+        ) THEN RAISE EXCEPTION 'PRIVACY_REQUEST_IDENTITY_VERIFICATION_INVALID' USING ERRCODE = '23514'; END IF;
+        NEW.verified_at := clock_timestamp();
+    ELSIF OLD.request_state = 'IDENTITY_VERIFIED' AND NEW.request_state = 'IN_PROGRESS' THEN
+        v_allowed := true; NEW.started_at := clock_timestamp();
+    ELSIF OLD.request_state IN ('BLOCKED', 'PARTIAL') AND NEW.request_state = 'IN_PROGRESS' THEN
+        v_allowed := true;
+    ELSIF OLD.request_state = 'IN_PROGRESS' AND NEW.request_state = 'BLOCKED' THEN
+        v_allowed := true;
+        IF NULLIF(btrim(NEW.blocked_reason_code), '') IS NULL THEN RAISE EXCEPTION 'PRIVACY_REQUEST_BLOCK_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+        NEW.blocked_at := clock_timestamp();
+    ELSIF OLD.request_state = 'IN_PROGRESS' AND NEW.request_state = 'PARTIAL' THEN
+        v_allowed := true; NEW.partial_at := clock_timestamp();
+    ELSIF OLD.request_state IN ('IN_PROGRESS', 'PARTIAL') AND NEW.request_state = 'COMPLETED' THEN
+        v_allowed := true; NEW.completed_at := clock_timestamp();
+    ELSIF OLD.request_state NOT IN ('COMPLETED', 'REJECTED') AND NEW.request_state = 'REJECTED' THEN
+        v_allowed := true;
+        IF NULLIF(btrim(NEW.rejection_reason_code), '') IS NULL THEN RAISE EXCEPTION 'PRIVACY_REQUEST_REJECTION_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+        NEW.rejected_at := clock_timestamp();
+    END IF;
+    IF NOT v_allowed THEN RAISE EXCEPTION 'INVALID_STATE_TRANSITION: Privacy Request % -> %', OLD.request_state, NEW.request_state USING ERRCODE = '23514'; END IF;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION privacy.fn_privacy_request_state_guard() IS 'Privacy Request 强制完成身份验证后处理，支持 BLOCKED/PARTIAL 恢复；完成或拒绝为终态，状态时间由数据库维护。';
+
+CREATE OR REPLACE FUNCTION migration.fn_batch_state_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE v_allowed boolean := false;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.migration_batch_state <> 'DISCOVERED' OR NEW.authority_side <> 'LEGACY'
+           OR num_nonnulls(NEW.irreversible_at, NEW.cutover_at, NEW.completed_at, NEW.paused_at, NEW.rolled_back_at) <> 0 THEN
+            RAISE EXCEPTION 'MIGRATION_BATCH_INITIAL_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF (NEW.batch_code, NEW.source_system_code, NEW.object_kind, NEW.operation_id,
+        NEW.source_snapshot_ref, NEW.source_snapshot_hash, NEW.rollback_deadline_at)
+       IS DISTINCT FROM
+       (OLD.batch_code, OLD.source_system_code, OLD.object_kind, OLD.operation_id,
+        OLD.source_snapshot_ref, OLD.source_snapshot_hash, OLD.rollback_deadline_at) THEN
+        RAISE EXCEPTION 'MIGRATION_BATCH_CONTEXT_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    IF OLD.irreversible_at IS NOT NULL AND NEW.irreversible_at IS DISTINCT FROM OLD.irreversible_at THEN
+        RAISE EXCEPTION 'MIGRATION_IRREVERSIBLE_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    IF OLD.irreversible_at IS NULL AND NEW.irreversible_at IS NOT NULL THEN
+        IF OLD.migration_batch_state NOT IN ('CUTOVER', 'OBSERVING') OR NEW.migration_batch_state <> OLD.migration_batch_state THEN
+            RAISE EXCEPTION 'MIGRATION_IRREVERSIBLE_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+        NEW.irreversible_at := clock_timestamp();
+    END IF;
+    IF OLD.migration_batch_state = NEW.migration_batch_state THEN
+        IF NEW.authority_side <> OLD.authority_side
+           OR (NEW.cutover_at, NEW.observing_until, NEW.completed_at, NEW.paused_at, NEW.rolled_back_at, NEW.paused_from_state)
+              IS DISTINCT FROM (OLD.cutover_at, OLD.observing_until, OLD.completed_at, OLD.paused_at, OLD.rolled_back_at, OLD.paused_from_state) THEN
+            RAISE EXCEPTION 'MIGRATION_STATE_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF (OLD.migration_batch_state = 'DISCOVERED' AND NEW.migration_batch_state = 'CLEANSED')
+       OR (OLD.migration_batch_state = 'CLEANSED' AND NEW.migration_batch_state = 'MAPPED')
+       OR (OLD.migration_batch_state = 'MAPPED' AND NEW.migration_batch_state = 'SHADOW')
+       OR (OLD.migration_batch_state = 'SHADOW' AND NEW.migration_batch_state = 'CANARY') THEN
+        v_allowed := true;
+    ELSIF OLD.migration_batch_state = 'CANARY' AND NEW.migration_batch_state = 'CUTOVER' THEN
+        v_allowed := true; NEW.cutover_at := clock_timestamp(); NEW.authority_side := 'PLATFORM';
+    ELSIF OLD.migration_batch_state = 'CUTOVER' AND NEW.migration_batch_state = 'OBSERVING' THEN
+        v_allowed := true;
+        IF NEW.observing_until IS NULL OR NEW.observing_until <= clock_timestamp() THEN RAISE EXCEPTION 'MIGRATION_OBSERVATION_WINDOW_REQUIRED' USING ERRCODE = '23514'; END IF;
+        NEW.authority_side := 'PLATFORM';
+    ELSIF OLD.migration_batch_state = 'OBSERVING' AND NEW.migration_batch_state = 'COMPLETE' THEN
+        v_allowed := true;
+        IF OLD.observing_until IS NULL OR OLD.observing_until > clock_timestamp() THEN RAISE EXCEPTION 'MIGRATION_OBSERVATION_NOT_FINISHED' USING ERRCODE = '23514'; END IF;
+        NEW.completed_at := clock_timestamp(); NEW.authority_side := 'PLATFORM';
+    ELSIF OLD.migration_batch_state NOT IN ('COMPLETE', 'ROLLED_BACK', 'PAUSED') AND NEW.migration_batch_state = 'PAUSED' THEN
+        v_allowed := true;
+        IF NULLIF(btrim(NEW.paused_reason_code), '') IS NULL THEN RAISE EXCEPTION 'MIGRATION_PAUSE_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+        NEW.paused_from_state := OLD.migration_batch_state; NEW.paused_at := clock_timestamp();
+    ELSIF OLD.migration_batch_state = 'PAUSED' AND NEW.migration_batch_state = OLD.paused_from_state THEN
+        v_allowed := true;
+    ELSIF OLD.migration_batch_state NOT IN ('COMPLETE', 'ROLLED_BACK') AND NEW.migration_batch_state = 'ROLLED_BACK' THEN
+        v_allowed := true;
+        IF OLD.irreversible_at IS NOT NULL OR OLD.rollback_deadline_at <= clock_timestamp() THEN RAISE EXCEPTION 'FORWARD_FIX_REQUIRED' USING ERRCODE = '23514'; END IF;
+        NEW.rolled_back_at := clock_timestamp(); NEW.authority_side := 'LEGACY';
+    END IF;
+    IF NOT v_allowed THEN RAISE EXCEPTION 'INVALID_STATE_TRANSITION: Migration Batch % -> %', OLD.migration_batch_state, NEW.migration_batch_state USING ERRCODE = '23514'; END IF;
+    IF NEW.migration_batch_state IN ('CUTOVER', 'OBSERVING', 'COMPLETE') AND NEW.authority_side <> 'PLATFORM' THEN
+        RAISE EXCEPTION 'MIGRATION_AUTHORITY_NOT_PLATFORM' USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION migration.fn_batch_state_guard() IS 'Migration Batch 强制按发现到观察完成顺序推进；暂停可回原阶段，可逆期内才可回滚，越过不可逆边界后只允许前向修复。';
+
+CREATE OR REPLACE FUNCTION authn.fn_login_transaction_state_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE v_allowed boolean := false;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.login_transaction_state <> 'CREATED'
+           OR num_nonnulls(NEW.identified_at, NEW.partially_authenticated_at, NEW.authenticated_at,
+                           NEW.pending_consent_at, NEW.completed_at, NEW.expired_at, NEW.abandoned_at,
+                           NEW.blocked_at, NEW.consumed_at) <> 0 THEN
+            RAISE EXCEPTION 'LOGIN_TRANSACTION_INITIAL_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF (NEW.client_id, NEW.business_line_id, NEW.tenant_id, NEW.profile_code, NEW.response_type,
+        NEW.requested_scopes, NEW.requested_resources, NEW.authorization_details, NEW.redirect_uri,
+        NEW.state_hash, NEW.nonce_hash, NEW.code_challenge, NEW.code_challenge_method, NEW.expires_at)
+       IS DISTINCT FROM
+       (OLD.client_id, OLD.business_line_id, OLD.tenant_id, OLD.profile_code, OLD.response_type,
+        OLD.requested_scopes, OLD.requested_resources, OLD.authorization_details, OLD.redirect_uri,
+        OLD.state_hash, OLD.nonce_hash, OLD.code_challenge, OLD.code_challenge_method, OLD.expires_at) THEN
+        RAISE EXCEPTION 'LOGIN_TRANSACTION_REQUEST_CONTEXT_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    IF NEW.user_id IS DISTINCT FROM OLD.user_id AND OLD.user_id IS NOT NULL THEN
+        RAISE EXCEPTION 'LOGIN_TRANSACTION_USER_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    IF (NEW.identified_at, NEW.partially_authenticated_at, NEW.authenticated_at, NEW.pending_consent_at,
+        NEW.completed_at, NEW.expired_at, NEW.abandoned_at, NEW.blocked_at)
+       IS DISTINCT FROM
+       (OLD.identified_at, OLD.partially_authenticated_at, OLD.authenticated_at, OLD.pending_consent_at,
+        OLD.completed_at, OLD.expired_at, OLD.abandoned_at, OLD.blocked_at)
+       AND NEW.login_transaction_state = OLD.login_transaction_state THEN
+        RAISE EXCEPTION 'LOGIN_TRANSACTION_STATE_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+
+    IF OLD.login_transaction_state = NEW.login_transaction_state THEN
+        v_allowed := true;
+    ELSIF OLD.login_transaction_state = 'CREATED' AND NEW.login_transaction_state = 'IDENTIFIED' THEN
+        v_allowed := true;
+        IF NEW.user_id IS NULL THEN RAISE EXCEPTION 'LOGIN_TRANSACTION_USER_REQUIRED' USING ERRCODE = '23514'; END IF;
+        NEW.identified_at := clock_timestamp();
+    ELSIF OLD.login_transaction_state = 'IDENTIFIED' AND NEW.login_transaction_state IN ('PARTIALLY_AUTHENTICATED', 'AUTHENTICATED') THEN
+        v_allowed := true;
+        IF NEW.login_transaction_state = 'PARTIALLY_AUTHENTICATED' THEN
+            NEW.partially_authenticated_at := clock_timestamp();
+        ELSE
+            NEW.authenticated_at := clock_timestamp();
+        END IF;
+    ELSIF OLD.login_transaction_state = 'PARTIALLY_AUTHENTICATED' AND NEW.login_transaction_state = 'AUTHENTICATED' THEN
+        v_allowed := true;
+        NEW.authenticated_at := clock_timestamp();
+    ELSIF OLD.login_transaction_state = 'AUTHENTICATED' AND NEW.login_transaction_state IN ('PENDING_CONSENT', 'COMPLETED') THEN
+        v_allowed := true;
+        IF NEW.risk_assessment_id IS NULL OR NEW.risk_level IS NULL OR NEW.achieved_aal IS NULL THEN
+            RAISE EXCEPTION 'LOGIN_TRANSACTION_ASSURANCE_OR_RISK_MISSING' USING ERRCODE = '23514';
+        END IF;
+        IF NEW.login_transaction_state = 'PENDING_CONSENT' THEN
+            IF cardinality(NEW.pending_consent_scopes) = 0 THEN RAISE EXCEPTION 'LOGIN_TRANSACTION_PENDING_CONSENT_EMPTY' USING ERRCODE = '23514'; END IF;
+            NEW.pending_consent_at := clock_timestamp();
+        ELSE
+            NEW.completed_at := clock_timestamp();
+        END IF;
+    ELSIF OLD.login_transaction_state = 'PENDING_CONSENT' AND NEW.login_transaction_state = 'COMPLETED' THEN
+        v_allowed := true;
+        IF cardinality(NEW.pending_consent_scopes) <> 0 THEN RAISE EXCEPTION 'LOGIN_TRANSACTION_CONSENT_STILL_PENDING' USING ERRCODE = '23514'; END IF;
+        NEW.completed_at := clock_timestamp();
+    ELSIF OLD.login_transaction_state NOT IN ('COMPLETED', 'EXPIRED', 'ABANDONED', 'BLOCKED')
+          AND NEW.login_transaction_state IN ('EXPIRED', 'ABANDONED', 'BLOCKED') THEN
+        v_allowed := true;
+        IF NEW.login_transaction_state = 'EXPIRED' THEN
+            IF OLD.expires_at > clock_timestamp() THEN RAISE EXCEPTION 'LOGIN_TRANSACTION_NOT_EXPIRED' USING ERRCODE = '23514'; END IF;
+            NEW.expired_at := clock_timestamp();
+        ELSIF NEW.login_transaction_state = 'ABANDONED' THEN
+            IF NULLIF(btrim(NEW.abandon_reason_code), '') IS NULL THEN RAISE EXCEPTION 'LOGIN_TRANSACTION_ABANDON_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+            NEW.abandoned_at := clock_timestamp();
+        ELSE
+            IF NULLIF(btrim(NEW.block_reason_code), '') IS NULL THEN RAISE EXCEPTION 'LOGIN_TRANSACTION_BLOCK_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+            NEW.blocked_at := clock_timestamp();
+        END IF;
+    END IF;
+
+    IF NOT v_allowed THEN
+        RAISE EXCEPTION 'INVALID_STATE_TRANSITION: Login Transaction % -> %', OLD.login_transaction_state, NEW.login_transaction_state USING ERRCODE = '23514';
+    END IF;
+    IF NEW.consumed_at IS DISTINCT FROM OLD.consumed_at THEN
+        IF OLD.login_transaction_state <> 'COMPLETED' OR OLD.consumed_at IS NOT NULL OR NEW.consumed_at IS NULL THEN
+            RAISE EXCEPTION 'LOGIN_TRANSACTION_CONSUMPTION_INVALID' USING ERRCODE = '23514';
+        END IF;
+        NEW.consumed_at := clock_timestamp();
+    END IF;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION authn.fn_login_transaction_state_guard() IS 'Login Transaction 强制从 CREATED 按蓝图逐步推进；请求上下文不可改写，终态时间和单次消费时间由数据库维护。';
+
+CREATE OR REPLACE FUNCTION authn.fn_authenticator_activation_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE v_allowed boolean := false;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.authenticator_state <> 'PENDING'
+           OR num_nonnulls(NEW.registered_at, NEW.suspended_at, NEW.locked_at, NEW.compromised_at,
+                           NEW.revoked_at, NEW.state_expired_at, NEW.replaced_by_id) <> 0 THEN
+            RAISE EXCEPTION 'AUTHENTICATOR_INITIAL_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF OLD.authenticator_state <> 'PENDING'
+       AND (NEW.user_id, NEW.authenticator_type, NEW.credential_public_id, NEW.public_key_cose,
+            NEW.secret_cipher, NEW.secret_key_version, NEW.aaguid)
+           IS DISTINCT FROM
+           (OLD.user_id, OLD.authenticator_type, OLD.credential_public_id, OLD.public_key_cose,
+            OLD.secret_cipher, OLD.secret_key_version, OLD.aaguid) THEN
+        RAISE EXCEPTION 'AUTHENTICATOR_CREDENTIAL_MATERIAL_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    IF OLD.authenticator_state = NEW.authenticator_state THEN
+        IF (NEW.registered_at, NEW.suspended_at, NEW.locked_at, NEW.compromised_at, NEW.revoked_at,
+            NEW.state_expired_at, NEW.replaced_by_id, NEW.state_reason_code)
+           IS DISTINCT FROM
+           (OLD.registered_at, OLD.suspended_at, OLD.locked_at, OLD.compromised_at, OLD.revoked_at,
+            OLD.state_expired_at, OLD.replaced_by_id, OLD.state_reason_code) THEN
+            RAISE EXCEPTION 'AUTHENTICATOR_STATE_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF OLD.authenticator_state = 'PENDING' AND NEW.authenticator_state = 'ACTIVE' THEN
+        v_allowed := true; PERFORM authn.fn_assert_user_can_authenticate(NEW.user_id); NEW.registered_at := clock_timestamp();
+    ELSIF OLD.authenticator_state = 'PENDING' AND NEW.authenticator_state = 'REVOKED' THEN
+        v_allowed := true; NEW.revoked_at := clock_timestamp();
+    ELSIF OLD.authenticator_state = 'ACTIVE' AND NEW.authenticator_state IN ('SUSPENDED', 'LOCKED', 'EXPIRED', 'COMPROMISED', 'REVOKED', 'REPLACED') THEN
+        v_allowed := true;
+    ELSIF OLD.authenticator_state IN ('SUSPENDED', 'LOCKED') AND NEW.authenticator_state IN ('ACTIVE', 'EXPIRED', 'COMPROMISED', 'REVOKED', 'REPLACED') THEN
+        v_allowed := true;
+        IF NEW.authenticator_state = 'ACTIVE' THEN PERFORM authn.fn_assert_user_can_authenticate(NEW.user_id); END IF;
+    ELSIF OLD.authenticator_state IN ('EXPIRED', 'COMPROMISED') AND NEW.authenticator_state IN ('REVOKED', 'REPLACED') THEN
+        v_allowed := true;
+    END IF;
+    IF NOT v_allowed THEN
+        RAISE EXCEPTION 'INVALID_STATE_TRANSITION: Authenticator % -> %', OLD.authenticator_state, NEW.authenticator_state USING ERRCODE = '23514';
+    END IF;
+    IF NEW.authenticator_state IN ('SUSPENDED', 'LOCKED', 'EXPIRED', 'COMPROMISED', 'REVOKED', 'REPLACED')
+       AND NULLIF(btrim(NEW.state_reason_code), '') IS NULL THEN
+        RAISE EXCEPTION 'AUTHENTICATOR_STATE_REASON_REQUIRED' USING ERRCODE = '23514';
+    END IF;
+    IF NEW.authenticator_state = 'SUSPENDED' THEN NEW.suspended_at := clock_timestamp();
+    ELSIF NEW.authenticator_state = 'LOCKED' THEN NEW.locked_at := clock_timestamp();
+    ELSIF NEW.authenticator_state = 'EXPIRED' THEN
+        IF NEW.expires_at IS NOT NULL AND NEW.expires_at > clock_timestamp() THEN RAISE EXCEPTION 'AUTHENTICATOR_NOT_EXPIRED' USING ERRCODE = '23514'; END IF;
+        NEW.state_expired_at := clock_timestamp();
+    ELSIF NEW.authenticator_state = 'COMPROMISED' THEN
+        NEW.compromised_at := clock_timestamp();
+        UPDATE iam.user_account
+           SET user_security_epoch = user_security_epoch + 1
+         WHERE id = NEW.user_id;
+        UPDATE oauth.user_session
+           SET session_state = 'REVOKED', revoke_reason_code = 'AUTHENTICATOR_COMPROMISED'
+         WHERE user_id = NEW.user_id AND session_state = 'ACTIVE';
+        UPDATE oauth.token_family
+           SET token_family_state = 'REVOKED', revoke_reason_code = 'AUTHENTICATOR_COMPROMISED'
+         WHERE subject_kind = 'USER' AND subject_id = NEW.user_id AND token_family_state = 'ACTIVE';
+    ELSIF NEW.authenticator_state = 'REVOKED' THEN NEW.revoked_at := clock_timestamp();
+    ELSIF NEW.authenticator_state = 'REPLACED' AND NEW.replaced_by_id IS NULL THEN
+        RAISE EXCEPTION 'AUTHENTICATOR_REPLACEMENT_REQUIRED' USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION authn.fn_authenticator_activation_guard() IS 'Authenticator 强制从 PENDING 激活；暂停/锁定可受控恢复，过期或失陷不得原地激活，失陷原子推进用户 epoch 并撤销会话与 Token Family。';
+
+CREATE OR REPLACE FUNCTION authn.fn_challenge_state_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE v_allowed boolean := false;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.challenge_state <> 'ISSUED'
+           OR num_nonnulls(NEW.verified_at, NEW.consumed_at, NEW.locked_at, NEW.expired_at, NEW.cancelled_at, NEW.superseded_by_id) <> 0 THEN
+            RAISE EXCEPTION 'CHALLENGE_INITIAL_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+        IF NEW.login_transaction_id IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM authn.login_transaction tx
+             WHERE tx.id = NEW.login_transaction_id AND tx.client_id = NEW.client_id
+               AND (NEW.user_id IS NULL OR tx.user_id IS NULL OR tx.user_id = NEW.user_id)
+               AND tx.login_transaction_state NOT IN ('COMPLETED', 'EXPIRED', 'ABANDONED', 'BLOCKED')
+               AND tx.expires_at > clock_timestamp()
+        ) THEN
+            RAISE EXCEPTION 'CHALLENGE_TRANSACTION_CONTEXT_INVALID' USING ERRCODE = '23514';
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM risk.risk_assessment ra
+             WHERE ra.id = NEW.risk_assessment_id AND ra.input_hash = NEW.risk_context_hash
+               AND ra.valid_until > clock_timestamp() AND ra.disposition <> 'DENY'
+        ) THEN
+            RAISE EXCEPTION 'CHALLENGE_RISK_CONTEXT_INVALID' USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF (NEW.challenge_purpose, NEW.client_id, NEW.login_transaction_id, NEW.user_id, NEW.target_identifier_id,
+        NEW.target_blind_index, NEW.delivery_channel, NEW.challenge_hash, NEW.hash_algorithm,
+        NEW.hash_key_version, NEW.risk_assessment_id, NEW.risk_context_hash, NEW.max_attempts, NEW.expires_at)
+       IS DISTINCT FROM
+       (OLD.challenge_purpose, OLD.client_id, OLD.login_transaction_id, OLD.user_id, OLD.target_identifier_id,
+        OLD.target_blind_index, OLD.delivery_channel, OLD.challenge_hash, OLD.hash_algorithm,
+        OLD.hash_key_version, OLD.risk_assessment_id, OLD.risk_context_hash, OLD.max_attempts, OLD.expires_at) THEN
+        RAISE EXCEPTION 'CHALLENGE_CONTEXT_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    IF NEW.attempt_count < OLD.attempt_count OR NEW.attempt_count > OLD.attempt_count + 1 THEN
+        RAISE EXCEPTION 'CHALLENGE_ATTEMPT_SEQUENCE_INVALID' USING ERRCODE = '23514';
+    END IF;
+    IF OLD.challenge_state <> 'ISSUED' AND NEW.attempt_count <> OLD.attempt_count THEN
+        RAISE EXCEPTION 'CHALLENGE_ATTEMPT_AFTER_ISSUED' USING ERRCODE = '23514';
+    END IF;
+
+    IF OLD.challenge_state = NEW.challenge_state THEN
+        IF (NEW.verified_at, NEW.consumed_at, NEW.locked_at, NEW.expired_at, NEW.cancelled_at,
+            NEW.superseded_by_id, NEW.state_reason_code)
+           IS DISTINCT FROM
+           (OLD.verified_at, OLD.consumed_at, OLD.locked_at, OLD.expired_at, OLD.cancelled_at,
+            OLD.superseded_by_id, OLD.state_reason_code) THEN
+            RAISE EXCEPTION 'CHALLENGE_STATE_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+        END IF;
+        v_allowed := true;
+    ELSIF OLD.challenge_state = 'ISSUED' AND NEW.challenge_state = 'VERIFIED' THEN
+        v_allowed := true;
+        IF OLD.expires_at <= clock_timestamp() OR NEW.attempt_count >= NEW.max_attempts THEN
+            RAISE EXCEPTION 'CHALLENGE_NOT_VERIFIABLE' USING ERRCODE = '23514';
+        END IF;
+        NEW.verified_at := clock_timestamp();
+    ELSIF OLD.challenge_state = 'VERIFIED' AND NEW.challenge_state = 'CONSUMED' THEN
+        v_allowed := true;
+        IF OLD.expires_at <= clock_timestamp() THEN RAISE EXCEPTION 'CHALLENGE_EXPIRED_BEFORE_CONSUMPTION' USING ERRCODE = '23514'; END IF;
+        NEW.consumed_at := clock_timestamp();
+    ELSIF OLD.challenge_state = 'ISSUED' AND NEW.challenge_state IN ('EXPIRED', 'LOCKED', 'CANCELLED') THEN
+        v_allowed := true;
+        IF NULLIF(btrim(NEW.state_reason_code), '') IS NULL THEN RAISE EXCEPTION 'CHALLENGE_STATE_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+        IF NEW.challenge_state = 'EXPIRED' THEN
+            IF OLD.expires_at > clock_timestamp() THEN RAISE EXCEPTION 'CHALLENGE_NOT_EXPIRED' USING ERRCODE = '23514'; END IF;
+            NEW.expired_at := clock_timestamp();
+        ELSIF NEW.challenge_state = 'LOCKED' THEN
+            NEW.locked_at := clock_timestamp();
+        ELSE
+            NEW.cancelled_at := clock_timestamp();
+            IF NEW.superseded_by_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM authn.verification_challenge successor
+                 WHERE successor.id = NEW.superseded_by_id AND successor.id <> NEW.id
+                   AND successor.challenge_state = 'ISSUED'
+                   AND successor.challenge_purpose = OLD.challenge_purpose
+                   AND successor.client_id = OLD.client_id
+                   AND successor.user_id IS NOT DISTINCT FROM OLD.user_id
+                   AND successor.target_identifier_id IS NOT DISTINCT FROM OLD.target_identifier_id
+                   AND successor.target_blind_index IS NOT DISTINCT FROM OLD.target_blind_index
+            ) THEN
+                RAISE EXCEPTION 'CHALLENGE_SUCCESSOR_CONTEXT_INVALID' USING ERRCODE = '23514';
+            END IF;
+        END IF;
+    END IF;
+    IF NOT v_allowed THEN
+        RAISE EXCEPTION 'INVALID_STATE_TRANSITION: Challenge % -> %', OLD.challenge_state, NEW.challenge_state USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION authn.fn_challenge_state_guard() IS 'Challenge 强制 ISSUED→VERIFIED→CONSUMED 或进入明确终态；绑定上下文、风险摘要、尝试序号和状态时间不可伪造。';
+
+CREATE OR REPLACE FUNCTION org.fn_business_line_state_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE v_allowed boolean := false;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.business_line_state <> 'PROVISIONING'
+           OR num_nonnulls(NEW.activated_at, NEW.suspended_at, NEW.closing_at, NEW.closed_at, NEW.irreversible_at) <> 0 THEN
+            RAISE EXCEPTION 'BUSINESS_LINE_INITIAL_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF OLD.irreversible_at IS NOT NULL AND NEW.irreversible_at IS DISTINCT FROM OLD.irreversible_at THEN
+        RAISE EXCEPTION 'BUSINESS_LINE_IRREVERSIBLE_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    IF OLD.irreversible_at IS NULL AND NEW.irreversible_at IS NOT NULL THEN
+        IF OLD.business_line_state <> 'CLOSING' OR NEW.business_line_state <> 'CLOSING' THEN
+            RAISE EXCEPTION 'BUSINESS_LINE_IRREVERSIBLE_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+        NEW.irreversible_at := clock_timestamp();
+    END IF;
+    IF OLD.business_line_state = NEW.business_line_state THEN
+        IF (NEW.activated_at, NEW.suspended_at, NEW.closing_at, NEW.closed_at, NEW.state_reason_code)
+           IS DISTINCT FROM (OLD.activated_at, OLD.suspended_at, OLD.closing_at, OLD.closed_at, OLD.state_reason_code) THEN
+            RAISE EXCEPTION 'BUSINESS_LINE_STATE_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF OLD.business_line_state = 'PROVISIONING' AND NEW.business_line_state = 'ACTIVE' THEN
+        v_allowed := true; NEW.activated_at := clock_timestamp();
+    ELSIF OLD.business_line_state = 'ACTIVE' AND NEW.business_line_state = 'SUSPENDED' THEN
+        v_allowed := true;
+        IF NULLIF(btrim(NEW.state_reason_code), '') IS NULL THEN RAISE EXCEPTION 'BUSINESS_LINE_SUSPEND_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+        IF EXISTS (SELECT 1 FROM org.tenant t WHERE t.business_line_id = NEW.id AND t.tenant_state = 'ACTIVE') THEN
+            RAISE EXCEPTION 'BUSINESS_LINE_ACTIVE_TENANT_EXISTS' USING ERRCODE = '23514';
+        END IF;
+        NEW.suspended_at := clock_timestamp();
+    ELSIF OLD.business_line_state = 'SUSPENDED' AND NEW.business_line_state = 'ACTIVE' THEN
+        v_allowed := true;
+        IF NULLIF(btrim(NEW.state_reason_code), '') IS NULL THEN RAISE EXCEPTION 'BUSINESS_LINE_REACTIVATION_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+    ELSIF OLD.business_line_state IN ('ACTIVE', 'SUSPENDED') AND NEW.business_line_state = 'CLOSING' THEN
+        v_allowed := true;
+        IF NULLIF(btrim(NEW.state_reason_code), '') IS NULL THEN RAISE EXCEPTION 'BUSINESS_LINE_CLOSE_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+        IF EXISTS (SELECT 1 FROM org.tenant t WHERE t.business_line_id = NEW.id AND t.tenant_state NOT IN ('CLOSING', 'CLOSED')) THEN
+            RAISE EXCEPTION 'BUSINESS_LINE_OPEN_TENANT_EXISTS' USING ERRCODE = '23514';
+        END IF;
+        NEW.closing_at := clock_timestamp();
+    ELSIF OLD.business_line_state = 'CLOSING' AND NEW.business_line_state = 'ACTIVE' THEN
+        v_allowed := true;
+        IF OLD.irreversible_at IS NOT NULL THEN RAISE EXCEPTION 'BUSINESS_LINE_CLOSE_IRREVERSIBLE' USING ERRCODE = '23514'; END IF;
+        IF NULLIF(btrim(NEW.state_reason_code), '') IS NULL THEN RAISE EXCEPTION 'BUSINESS_LINE_CLOSE_WITHDRAW_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+    ELSIF OLD.business_line_state = 'CLOSING' AND NEW.business_line_state = 'CLOSED' THEN
+        v_allowed := true;
+        IF NEW.irreversible_at IS NULL THEN RAISE EXCEPTION 'BUSINESS_LINE_IRREVERSIBLE_EVIDENCE_REQUIRED' USING ERRCODE = '23514'; END IF;
+        IF EXISTS (SELECT 1 FROM org.tenant t WHERE t.business_line_id = NEW.id AND t.tenant_state <> 'CLOSED') THEN
+            RAISE EXCEPTION 'BUSINESS_LINE_UNCLOSED_TENANT_EXISTS' USING ERRCODE = '23514';
+        END IF;
+        NEW.closed_at := clock_timestamp();
+    END IF;
+    IF NOT v_allowed THEN RAISE EXCEPTION 'INVALID_STATE_TRANSITION: Business Line % -> %', OLD.business_line_state, NEW.business_line_state USING ERRCODE = '23514'; END IF;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION org.fn_business_line_state_guard() IS 'Business Line 按 PROVISIONING、ACTIVE/SUSPENDED、CLOSING、CLOSED 推进；下属 Tenant、不可逆边界、原因与状态时间由数据库保护。';
+
+CREATE OR REPLACE FUNCTION org.fn_tenant_state_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE v_allowed boolean := false;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.tenant_state <> 'PROVISIONING'
+           OR num_nonnulls(NEW.activated_at, NEW.suspended_at, NEW.closing_at, NEW.closed_at, NEW.irreversible_at) <> 0 THEN
+            RAISE EXCEPTION 'TENANT_INITIAL_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF OLD.irreversible_at IS NOT NULL AND NEW.irreversible_at IS DISTINCT FROM OLD.irreversible_at THEN
+        RAISE EXCEPTION 'TENANT_IRREVERSIBLE_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    IF OLD.irreversible_at IS NULL AND NEW.irreversible_at IS NOT NULL THEN
+        IF OLD.tenant_state <> 'CLOSING' OR NEW.tenant_state <> 'CLOSING' THEN
+            RAISE EXCEPTION 'TENANT_IRREVERSIBLE_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+        NEW.irreversible_at := clock_timestamp();
+        NEW.tenant_security_epoch := GREATEST(NEW.tenant_security_epoch, OLD.tenant_security_epoch + 1);
+    END IF;
+    IF OLD.tenant_state = NEW.tenant_state THEN
+        IF (NEW.activated_at, NEW.suspended_at, NEW.closing_at, NEW.closed_at)
+           IS DISTINCT FROM (OLD.activated_at, OLD.suspended_at, OLD.closing_at, OLD.closed_at) THEN
+            RAISE EXCEPTION 'TENANT_STATE_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF OLD.tenant_state = 'PROVISIONING' AND NEW.tenant_state = 'ACTIVE' THEN
+        v_allowed := true;
+        IF NOT EXISTS (SELECT 1 FROM org.business_line b WHERE b.id = NEW.business_line_id AND b.business_line_state = 'ACTIVE') THEN
+            RAISE EXCEPTION 'TENANT_BUSINESS_LINE_NOT_ACTIVE' USING ERRCODE = '23514';
+        END IF;
+        NEW.activated_at := clock_timestamp();
+    ELSIF OLD.tenant_state = 'ACTIVE' AND NEW.tenant_state = 'SUSPENDED' THEN
+        v_allowed := true;
+        IF NULLIF(btrim(NEW.state_reason_code), '') IS NULL THEN RAISE EXCEPTION 'TENANT_SUSPEND_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+        NEW.suspended_at := clock_timestamp();
+    ELSIF OLD.tenant_state = 'SUSPENDED' AND NEW.tenant_state = 'ACTIVE' THEN
+        v_allowed := true;
+        IF NULLIF(btrim(NEW.state_reason_code), '') IS NULL THEN RAISE EXCEPTION 'TENANT_REACTIVATION_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+    ELSIF OLD.tenant_state IN ('ACTIVE', 'SUSPENDED') AND NEW.tenant_state = 'CLOSING' THEN
+        v_allowed := true;
+        IF NEW.close_operation_id IS NULL OR NULLIF(btrim(NEW.state_reason_code), '') IS NULL THEN
+            RAISE EXCEPTION 'TENANT_CLOSE_OPERATION_AND_REASON_REQUIRED' USING ERRCODE = '23514';
+        END IF;
+        NEW.closing_at := clock_timestamp();
+    ELSIF OLD.tenant_state = 'CLOSING' AND NEW.tenant_state = 'ACTIVE' THEN
+        v_allowed := true;
+        IF OLD.irreversible_at IS NOT NULL THEN RAISE EXCEPTION 'TENANT_CLOSE_IRREVERSIBLE' USING ERRCODE = '23514'; END IF;
+        IF NULLIF(btrim(NEW.state_reason_code), '') IS NULL THEN RAISE EXCEPTION 'TENANT_CLOSE_WITHDRAW_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+    ELSIF OLD.tenant_state = 'CLOSING' AND NEW.tenant_state = 'CLOSED' THEN
+        v_allowed := true;
+        IF NEW.irreversible_at IS NULL THEN RAISE EXCEPTION 'TENANT_IRREVERSIBLE_EVIDENCE_REQUIRED' USING ERRCODE = '23514'; END IF;
+        NEW.closed_at := clock_timestamp();
+    END IF;
+    IF NOT v_allowed THEN RAISE EXCEPTION 'INVALID_STATE_TRANSITION: Tenant % -> %', OLD.tenant_state, NEW.tenant_state USING ERRCODE = '23514'; END IF;
+    NEW.tenant_security_epoch := GREATEST(NEW.tenant_security_epoch, OLD.tenant_security_epoch + 1);
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION org.fn_tenant_state_guard() IS 'Tenant 按 PROVISIONING、ACTIVE/SUSPENDED、CLOSING、CLOSED 蓝图推进；不可逆边界、状态时间和 security epoch 由数据库保护。';
+
+CREATE OR REPLACE FUNCTION org.fn_organization_state_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE v_allowed boolean := false;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.organization_state <> 'ACTIVE' OR num_nonnulls(NEW.suspended_at, NEW.closed_at, NEW.state_reason_code) <> 0 THEN
+            RAISE EXCEPTION 'ORGANIZATION_INITIAL_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM org.tenant t WHERE t.id = NEW.tenant_id AND t.tenant_state = 'ACTIVE') THEN
+            RAISE EXCEPTION 'ORGANIZATION_TENANT_NOT_ACTIVE' USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF OLD.organization_state = NEW.organization_state THEN
+        IF (NEW.suspended_at, NEW.closed_at, NEW.state_reason_code)
+           IS DISTINCT FROM (OLD.suspended_at, OLD.closed_at, OLD.state_reason_code) THEN
+            RAISE EXCEPTION 'ORGANIZATION_STATE_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF OLD.organization_state = 'ACTIVE' AND NEW.organization_state = 'SUSPENDED' THEN
+        v_allowed := true;
+        IF NULLIF(btrim(NEW.state_reason_code), '') IS NULL THEN RAISE EXCEPTION 'ORGANIZATION_SUSPEND_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+        NEW.suspended_at := clock_timestamp();
+    ELSIF OLD.organization_state = 'SUSPENDED' AND NEW.organization_state = 'ACTIVE' THEN
+        v_allowed := true;
+        IF NULLIF(btrim(NEW.state_reason_code), '') IS NULL THEN RAISE EXCEPTION 'ORGANIZATION_REACTIVATION_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+        IF NOT EXISTS (SELECT 1 FROM org.tenant t WHERE t.id = NEW.tenant_id AND t.tenant_state = 'ACTIVE') THEN
+            RAISE EXCEPTION 'ORGANIZATION_TENANT_NOT_ACTIVE' USING ERRCODE = '23514';
+        END IF;
+    ELSIF OLD.organization_state IN ('ACTIVE', 'SUSPENDED') AND NEW.organization_state = 'CLOSED' THEN
+        v_allowed := true;
+        IF NULLIF(btrim(NEW.state_reason_code), '') IS NULL THEN RAISE EXCEPTION 'ORGANIZATION_CLOSE_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+        IF EXISTS (SELECT 1 FROM org.organization child WHERE child.parent_id = NEW.id AND child.organization_state <> 'CLOSED') THEN
+            RAISE EXCEPTION 'ORGANIZATION_OPEN_CHILD_EXISTS' USING ERRCODE = '23514';
+        END IF;
+        IF EXISTS (SELECT 1 FROM org.membership m WHERE m.organization_id = NEW.id AND m.membership_state NOT IN ('LEFT', 'REJECTED', 'EXPIRED')) THEN
+            RAISE EXCEPTION 'ORGANIZATION_EFFECTIVE_MEMBERSHIP_EXISTS' USING ERRCODE = '23514';
+        END IF;
+        NEW.closed_at := clock_timestamp();
+    END IF;
+    IF NOT v_allowed THEN RAISE EXCEPTION 'INVALID_STATE_TRANSITION: Organization % -> %', OLD.organization_state, NEW.organization_state USING ERRCODE = '23514'; END IF;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION org.fn_organization_state_guard() IS 'Organization 只允许 ACTIVE 与 SUSPENDED 受控切换并最终 CLOSED；关闭前必须清理有效子组织和 Membership。';
+
+CREATE OR REPLACE FUNCTION org.fn_membership_state_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE v_allowed boolean := false;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.membership_state <> 'INVITED'
+           OR num_nonnulls(NEW.joined_at, NEW.suspended_at, NEW.banned_at, NEW.left_at, NEW.rejected_at, NEW.state_expired_at) <> 0 THEN
+            RAISE EXCEPTION 'MEMBERSHIP_INITIAL_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF OLD.membership_state = NEW.membership_state THEN
+        IF (NEW.joined_at, NEW.suspended_at, NEW.banned_at, NEW.left_at, NEW.rejected_at,
+            NEW.state_expired_at, NEW.state_reason_code)
+           IS DISTINCT FROM
+           (OLD.joined_at, OLD.suspended_at, OLD.banned_at, OLD.left_at, OLD.rejected_at,
+            OLD.state_expired_at, OLD.state_reason_code) THEN
+            RAISE EXCEPTION 'MEMBERSHIP_STATE_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF OLD.membership_state = 'INVITED' AND NEW.membership_state = 'PENDING_APPROVAL' THEN
+        v_allowed := true;
+    ELSIF OLD.membership_state = 'PENDING_APPROVAL' AND NEW.membership_state = 'ACTIVE' THEN
+        v_allowed := true; NEW.joined_at := COALESCE(OLD.joined_at, clock_timestamp());
+    ELSIF OLD.membership_state IN ('INVITED', 'PENDING_APPROVAL') AND NEW.membership_state IN ('REJECTED', 'EXPIRED') THEN
+        v_allowed := true;
+        IF NULLIF(btrim(NEW.state_reason_code), '') IS NULL THEN RAISE EXCEPTION 'MEMBERSHIP_STATE_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+        IF NEW.membership_state = 'REJECTED' THEN NEW.rejected_at := clock_timestamp(); ELSE NEW.state_expired_at := clock_timestamp(); END IF;
+    ELSIF OLD.membership_state = 'ACTIVE' AND NEW.membership_state = 'SUSPENDED' THEN
+        v_allowed := true; NEW.suspended_at := clock_timestamp();
+    ELSIF OLD.membership_state = 'SUSPENDED' AND NEW.membership_state = 'ACTIVE' THEN
+        v_allowed := true;
+        IF NULLIF(btrim(NEW.state_reason_code), '') IS NULL OR NEW.state_reason_code IS NOT DISTINCT FROM OLD.state_reason_code THEN
+            RAISE EXCEPTION 'MEMBERSHIP_REACTIVATION_REASON_REQUIRED' USING ERRCODE = '23514';
+        END IF;
+    ELSIF OLD.membership_state IN ('ACTIVE', 'SUSPENDED') AND NEW.membership_state = 'BANNED' THEN
+        v_allowed := true; NEW.banned_at := clock_timestamp();
+    ELSIF OLD.membership_state = 'BANNED' AND NEW.membership_state = 'ACTIVE' THEN
+        v_allowed := true;
+        IF NULLIF(btrim(NEW.state_reason_code), '') IS NULL OR NEW.state_reason_code IS NOT DISTINCT FROM OLD.state_reason_code THEN
+            RAISE EXCEPTION 'MEMBERSHIP_UNBAN_REASON_REQUIRED' USING ERRCODE = '23514';
+        END IF;
+    ELSIF OLD.membership_state IN ('ACTIVE', 'SUSPENDED', 'BANNED') AND NEW.membership_state = 'LEFT' THEN
+        v_allowed := true; NEW.left_at := clock_timestamp();
+    END IF;
+    IF NOT v_allowed THEN RAISE EXCEPTION 'INVALID_STATE_TRANSITION: Membership % -> %', OLD.membership_state, NEW.membership_state USING ERRCODE = '23514'; END IF;
+    IF NEW.membership_state IN ('SUSPENDED', 'BANNED', 'LEFT') AND NULLIF(btrim(NEW.state_reason_code), '') IS NULL THEN
+        RAISE EXCEPTION 'MEMBERSHIP_STATE_REASON_REQUIRED' USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION org.fn_membership_state_guard() IS 'Membership 强制按邀请、审批、激活、暂停、封禁、离开及终态路径推进，并由数据库记录状态时间和原因。';
+
+CREATE OR REPLACE FUNCTION org.fn_invitation_state_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE v_allowed boolean := false;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.invitation_state <> 'PENDING'
+           OR num_nonnulls(NEW.accepted_at, NEW.rejected_at, NEW.revoked_at, NEW.state_expired_at,
+                           NEW.accepted_by_user_id, NEW.accepted_membership_id) <> 0 THEN
+            RAISE EXCEPTION 'INVITATION_INITIAL_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM org.membership m
+             WHERE m.id = NEW.inviter_membership_id AND m.tenant_id = NEW.tenant_id
+               AND m.business_line_id = NEW.business_line_id AND m.membership_state = 'ACTIVE'
+        ) THEN RAISE EXCEPTION 'INVITATION_INVITER_NOT_ACTIVE' USING ERRCODE = '23514'; END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM authz.authorization_decision d
+            JOIN org.membership inviter ON inviter.id = NEW.inviter_membership_id
+             WHERE d.id = NEW.creation_authorization_decision_id
+               AND d.subject_kind = 'MEMBERSHIP' AND d.subject_ref = inviter.public_id
+               AND d.resource_type = 'INVITATION' AND d.resource_ref = NEW.public_id
+               AND d.action_code = 'tenant.invitation.create' AND d.tenant_id = NEW.tenant_id
+               AND d.input_hash = NEW.preauthorization_hash AND d.decision_effect = 'ALLOW'
+               AND d.valid_until > clock_timestamp()
+        ) THEN RAISE EXCEPTION 'INVITATION_CREATION_AUTHORIZATION_INVALID' USING ERRCODE = '23514'; END IF;
+        IF EXISTS (
+            SELECT 1 FROM unnest(NEW.preauthorized_role_ids) role_id
+             LEFT JOIN authz.role r ON r.id = role_id
+            WHERE r.id IS NULL OR r.role_state <> 'ACTIVE' OR r.scope_kind = 'PLATFORM'
+               OR (r.scope_kind = 'BUSINESS_LINE' AND r.business_line_id <> NEW.business_line_id)
+               OR (r.scope_kind = 'TENANT' AND r.tenant_id <> NEW.tenant_id)
+               OR (r.scope_kind = 'ORGANIZATION' AND (r.tenant_id <> NEW.tenant_id OR r.organization_id IS DISTINCT FROM NEW.organization_id))
+        ) THEN RAISE EXCEPTION 'INVITATION_PREAUTHORIZED_ROLE_SCOPE_INVALID' USING ERRCODE = '23514'; END IF;
+        RETURN NEW;
+    END IF;
+    IF (NEW.business_line_id, NEW.tenant_id, NEW.organization_id, NEW.target_identifier_kind,
+        NEW.target_normalized_hash, NEW.invitation_token_hash, NEW.inviter_membership_id,
+        NEW.preauthorized_role_ids, NEW.preauthorization_hash, NEW.creation_authorization_decision_id, NEW.expires_at)
+       IS DISTINCT FROM
+       (OLD.business_line_id, OLD.tenant_id, OLD.organization_id, OLD.target_identifier_kind,
+        OLD.target_normalized_hash, OLD.invitation_token_hash, OLD.inviter_membership_id,
+        OLD.preauthorized_role_ids, OLD.preauthorization_hash, OLD.creation_authorization_decision_id, OLD.expires_at) THEN
+        RAISE EXCEPTION 'INVITATION_CONTEXT_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    IF OLD.invitation_state = 'PENDING' AND NEW.invitation_state IN ('ACCEPTED', 'REJECTED', 'EXPIRED', 'REVOKED') THEN
+        v_allowed := true;
+        IF NEW.invitation_state = 'ACCEPTED' THEN
+            IF OLD.expires_at <= clock_timestamp() THEN RAISE EXCEPTION 'INVITATION_EXPIRED' USING ERRCODE = '23514'; END IF;
+            IF NEW.accepted_by_user_id IS NULL OR NEW.accepted_membership_id IS NULL THEN RAISE EXCEPTION 'INVITATION_ACCEPTANCE_EVIDENCE_REQUIRED' USING ERRCODE = '23514'; END IF;
+            IF NEW.acceptance_authorization_decision_id IS NULL OR NOT EXISTS (
+                SELECT 1 FROM authz.authorization_decision d
+                JOIN org.membership inviter ON inviter.id = OLD.inviter_membership_id
+                 WHERE d.id = NEW.acceptance_authorization_decision_id
+                   AND d.subject_kind = 'MEMBERSHIP' AND d.subject_ref = inviter.public_id
+                   AND d.resource_type = 'INVITATION' AND d.resource_ref = NEW.public_id
+                   AND d.action_code = 'tenant.invitation.accept' AND d.tenant_id = NEW.tenant_id
+                   AND d.input_hash = NEW.preauthorization_hash AND d.decision_effect = 'ALLOW'
+                   AND d.valid_until > clock_timestamp()
+            ) THEN RAISE EXCEPTION 'INVITATION_ACCEPTANCE_AUTHORIZATION_INVALID' USING ERRCODE = '23514'; END IF;
+            IF NOT EXISTS (
+                SELECT 1 FROM org.membership m
+                 WHERE m.id = NEW.accepted_membership_id AND m.user_id = NEW.accepted_by_user_id
+                   AND m.business_line_id = NEW.business_line_id AND m.tenant_id = NEW.tenant_id
+                   AND m.organization_id IS NOT DISTINCT FROM NEW.organization_id AND m.membership_state = 'ACTIVE'
+            ) THEN RAISE EXCEPTION 'INVITATION_MEMBERSHIP_CONTEXT_INVALID' USING ERRCODE = '23514'; END IF;
+            IF NOT EXISTS (
+                SELECT 1 FROM org.membership inviter
+                 WHERE inviter.id = OLD.inviter_membership_id AND inviter.membership_state = 'ACTIVE'
+            ) THEN RAISE EXCEPTION 'INVITATION_INVITER_NO_LONGER_ACTIVE' USING ERRCODE = '23514'; END IF;
+            IF NEW.target_identifier_kind IN ('PHONE', 'EMAIL', 'USERNAME') AND NOT EXISTS (
+                SELECT 1 FROM iam.identifier i
+                 WHERE i.user_id = NEW.accepted_by_user_id AND i.identifier_type = NEW.target_identifier_kind
+                   AND i.identifier_state = 'VERIFIED' AND i.ownership_digest = NEW.target_normalized_hash
+            ) THEN RAISE EXCEPTION 'INVITATION_TARGET_IDENTIFIER_MISMATCH' USING ERRCODE = '23514'; END IF;
+            IF NEW.target_identifier_kind = 'EXTERNAL_ID' AND NOT EXISTS (
+                SELECT 1 FROM federation.external_identity ei
+                 WHERE ei.user_id = NEW.accepted_by_user_id AND ei.binding_state = 'LINKED'
+                   AND ei.canonical_subject_hash = NEW.target_normalized_hash
+            ) THEN RAISE EXCEPTION 'INVITATION_TARGET_EXTERNAL_ID_MISMATCH' USING ERRCODE = '23514'; END IF;
+            IF EXISTS (
+                SELECT 1 FROM unnest(NEW.preauthorized_role_ids) role_id
+                 LEFT JOIN authz.role r ON r.id = role_id
+                WHERE r.id IS NULL OR r.role_state <> 'ACTIVE' OR r.scope_kind = 'PLATFORM'
+                   OR (r.scope_kind = 'BUSINESS_LINE' AND r.business_line_id <> NEW.business_line_id)
+                   OR (r.scope_kind = 'TENANT' AND r.tenant_id <> NEW.tenant_id)
+                   OR (r.scope_kind = 'ORGANIZATION' AND (r.tenant_id <> NEW.tenant_id OR r.organization_id IS DISTINCT FROM NEW.organization_id))
+            ) THEN RAISE EXCEPTION 'INVITATION_ROLE_NO_LONGER_AUTHORIZABLE' USING ERRCODE = '23514'; END IF;
+            NEW.accepted_at := clock_timestamp();
+        ELSE
+            IF NULLIF(btrim(NEW.state_reason_code), '') IS NULL THEN RAISE EXCEPTION 'INVITATION_STATE_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+            IF NEW.invitation_state = 'REJECTED' THEN NEW.rejected_at := clock_timestamp();
+            ELSIF NEW.invitation_state = 'EXPIRED' THEN
+                IF OLD.expires_at > clock_timestamp() THEN RAISE EXCEPTION 'INVITATION_NOT_EXPIRED' USING ERRCODE = '23514'; END IF;
+                NEW.state_expired_at := clock_timestamp();
+            ELSE NEW.revoked_at := clock_timestamp();
+            END IF;
+        END IF;
+    END IF;
+    IF NOT v_allowed THEN RAISE EXCEPTION 'INVALID_STATE_TRANSITION: Invitation % -> %', OLD.invitation_state, NEW.invitation_state USING ERRCODE = '23514'; END IF;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION org.fn_invitation_state_guard() IS 'Invitation 只能从 PENDING 单次进入终态；创建与接受时重新校验邀请人、角色和 Membership 范围，时间由数据库生成。';
+
+CREATE OR REPLACE FUNCTION assurance.fn_delegation_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_parent assurance.delegation%ROWTYPE;
+    v_allowed boolean := false;
+    v_expected_hash bytea;
+BEGIN
+    v_expected_hash := core.fn_hash_jsonb(jsonb_build_object(
+        'subject_user_id', NEW.subject_user_id::text,
+        'actor_user_id', NEW.actor_user_id::text,
+        'tenant_id', NEW.tenant_id::text,
+        'allowed_actions', ARRAY(SELECT x FROM unnest(NEW.allowed_actions) AS x ORDER BY x),
+        'resource_scope', NEW.resource_scope,
+        'prohibited_operations', ARRAY(SELECT x FROM unnest(NEW.prohibited_operations) AS x ORDER BY x),
+        'max_depth', NEW.max_depth,
+        'parent_delegation_id', NEW.parent_delegation_id::text,
+        'risk_assessment_id', NEW.risk_assessment_id::text,
+        'subject_assurance_hash', encode(NEW.subject_assurance_hash, 'hex'),
+        'actor_assurance_hash', encode(NEW.actor_assurance_hash, 'hex'),
+        'valid_from_epoch', extract(epoch FROM NEW.valid_from),
+        'valid_until_epoch', extract(epoch FROM NEW.valid_until)
+    ));
+    IF NEW.delegation_context_hash <> v_expected_hash THEN
+        RAISE EXCEPTION 'DELEGATION_CONTEXT_HASH_MISMATCH' USING ERRCODE = '23514';
+    END IF;
+
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.delegation_state <> 'PENDING' OR num_nonnulls(NEW.activated_at, NEW.revoked_at, NEW.expired_at, NEW.revoked_by_ref, NEW.revoke_reason_code) <> 0 THEN
+            RAISE EXCEPTION 'DELEGATION_INITIAL_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+    ELSE
+        IF (NEW.subject_user_id, NEW.actor_user_id, NEW.tenant_id, NEW.allowed_actions, NEW.resource_scope,
+            NEW.prohibited_operations, NEW.max_depth, NEW.parent_delegation_id, NEW.approval_case_id,
+            NEW.risk_assessment_id, NEW.subject_assurance_hash, NEW.actor_assurance_hash,
+            NEW.delegation_context_hash, NEW.valid_from, NEW.valid_until)
+           IS DISTINCT FROM
+           (OLD.subject_user_id, OLD.actor_user_id, OLD.tenant_id, OLD.allowed_actions, OLD.resource_scope,
+            OLD.prohibited_operations, OLD.max_depth, OLD.parent_delegation_id, OLD.approval_case_id,
+            OLD.risk_assessment_id, OLD.subject_assurance_hash, OLD.actor_assurance_hash,
+            OLD.delegation_context_hash, OLD.valid_from, OLD.valid_until) THEN
+            RAISE EXCEPTION 'DELEGATION_CONTEXT_IMMUTABLE' USING ERRCODE = '55000';
+        END IF;
+    END IF;
+
+    IF NEW.parent_delegation_id IS NOT NULL THEN
+        SELECT * INTO v_parent FROM assurance.delegation WHERE id = NEW.parent_delegation_id;
+        IF NOT FOUND OR v_parent.delegation_state <> 'ACTIVE' OR v_parent.valid_until <= clock_timestamp()
+           OR v_parent.tenant_id <> NEW.tenant_id OR v_parent.actor_user_id <> NEW.subject_user_id
+           OR NOT (NEW.allowed_actions <@ v_parent.allowed_actions)
+           OR NOT (NEW.resource_scope <@ v_parent.resource_scope)
+           OR NEW.max_depth >= v_parent.max_depth THEN
+            RAISE EXCEPTION 'DELEGATION_PARENT_SCOPE_OR_DEPTH_INVALID' USING ERRCODE = '23514';
+        END IF;
+    END IF;
+    IF TG_OP = 'INSERT' THEN RETURN NEW; END IF;
+
+    IF OLD.delegation_state = 'PENDING' AND NEW.delegation_state = 'ACTIVE' THEN
+        v_allowed := true;
+        IF NEW.valid_from > clock_timestamp() OR NEW.valid_until <= clock_timestamp() THEN RAISE EXCEPTION 'DELEGATION_OUTSIDE_WINDOW' USING ERRCODE = '23514'; END IF;
+        IF NEW.approval_case_id IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM control.approval_case a
+             WHERE a.id = NEW.approval_case_id AND a.approval_type = 'DELEGATION'
+               AND a.approval_state = 'EXECUTED' AND a.tenant_id = NEW.tenant_id
+               AND a.resource_kind = 'DELEGATION' AND a.resource_ref = NEW.public_id
+               AND a.after_value_hash = NEW.delegation_context_hash
+        ) THEN RAISE EXCEPTION 'DELEGATION_APPROVAL_BINDING_INVALID' USING ERRCODE = '23514'; END IF;
+        NEW.activated_at := clock_timestamp();
+    ELSIF OLD.delegation_state = 'PENDING' AND NEW.delegation_state = 'REJECTED' THEN
+        v_allowed := true;
+    ELSIF OLD.delegation_state IN ('PENDING', 'ACTIVE') AND NEW.delegation_state = 'REVOKED' THEN
+        v_allowed := true;
+        IF NULLIF(btrim(NEW.revoked_by_ref), '') IS NULL OR NULLIF(btrim(NEW.revoke_reason_code), '') IS NULL THEN
+            RAISE EXCEPTION 'DELEGATION_REVOCATION_EVIDENCE_REQUIRED' USING ERRCODE = '23514';
+        END IF;
+        NEW.revoked_at := clock_timestamp();
+    ELSIF OLD.delegation_state IN ('PENDING', 'ACTIVE') AND NEW.delegation_state = 'EXPIRED' THEN
+        v_allowed := true;
+        IF OLD.valid_until > clock_timestamp() THEN RAISE EXCEPTION 'DELEGATION_NOT_EXPIRED' USING ERRCODE = '23514'; END IF;
+        NEW.expired_at := clock_timestamp();
+    END IF;
+    IF NOT v_allowed THEN RAISE EXCEPTION 'INVALID_STATE_TRANSITION: Delegation % -> %', OLD.delegation_state, NEW.delegation_state USING ERRCODE = '23514'; END IF;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION assurance.fn_delegation_guard() IS 'Delegation 强制从 PENDING 激活或终结；上下文、审批摘要、父链动作/资源/深度、有效期和撤销方均受数据库校验。';
+
+CREATE OR REPLACE FUNCTION workload.fn_machine_credential_state_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE v_allowed boolean := false;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.credential_state <> 'PENDING' OR num_nonnulls(NEW.revoked_at, NEW.compromised_at) <> 0 THEN
+            RAISE EXCEPTION 'MACHINE_CREDENTIAL_INITIAL_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF (NEW.machine_principal_id, NEW.credential_kind, NEW.key_id, NEW.certificate_thumbprint,
+        NEW.secret_hash, NEW.public_material, NEW.key_asset_id, NEW.issued_at,
+        NEW.activates_at, NEW.expires_at, NEW.rotate_before, NEW.replaces_credential_id)
+       IS DISTINCT FROM
+       (OLD.machine_principal_id, OLD.credential_kind, OLD.key_id, OLD.certificate_thumbprint,
+        OLD.secret_hash, OLD.public_material, OLD.key_asset_id, OLD.issued_at,
+        OLD.activates_at, OLD.expires_at, OLD.rotate_before, OLD.replaces_credential_id) THEN
+        RAISE EXCEPTION 'MACHINE_CREDENTIAL_CONTEXT_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    IF OLD.credential_state = NEW.credential_state THEN
+        IF (NEW.revoked_at, NEW.compromised_at, NEW.state_reason_code)
+           IS DISTINCT FROM (OLD.revoked_at, OLD.compromised_at, OLD.state_reason_code) THEN
+            RAISE EXCEPTION 'MACHINE_CREDENTIAL_STATE_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF OLD.credential_state = 'PENDING' AND NEW.credential_state = 'ACTIVE' THEN
+        v_allowed := true;
+        IF NEW.activates_at > clock_timestamp() OR NEW.expires_at <= clock_timestamp() THEN RAISE EXCEPTION 'MACHINE_CREDENTIAL_OUTSIDE_WINDOW' USING ERRCODE = '23514'; END IF;
+        IF NEW.replaces_credential_id IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM workload.machine_credential previous
+             WHERE previous.id = NEW.replaces_credential_id
+               AND previous.machine_principal_id = NEW.machine_principal_id
+               AND previous.credential_state = 'ROTATING'
+        ) THEN RAISE EXCEPTION 'MACHINE_CREDENTIAL_REPLACEMENT_NOT_ROTATING' USING ERRCODE = '23514'; END IF;
+        IF NEW.credential_kind = 'PRIVATE_KEY_JWT' AND NOT EXISTS (
+            SELECT 1
+              FROM crypto.key_asset k
+              JOIN workload.machine_principal mp ON mp.id = NEW.machine_principal_id
+             WHERE k.id = NEW.key_asset_id AND k.environment = mp.environment
+               AND k.key_use = 'TOKEN_SIGNING' AND k.key_state = 'SIGNING_AND_VERIFYING'
+               AND k.not_before <= clock_timestamp() AND k.not_after > clock_timestamp()
+        ) THEN RAISE EXCEPTION 'MACHINE_CREDENTIAL_SIGNING_KEY_INVALID' USING ERRCODE = '23514'; END IF;
+        IF NEW.credential_kind = 'MTLS' AND NOT EXISTS (
+            SELECT 1
+              FROM crypto.certificate_asset cert
+              JOIN workload.machine_principal mp ON mp.id = NEW.machine_principal_id
+             WHERE cert.thumbprint_sha256 = NEW.certificate_thumbprint
+               AND cert.environment = mp.environment
+               AND cert.certificate_kind = 'MTLS_CLIENT'
+               AND cert.certificate_state IN ('ACTIVE', 'GRACE')
+               AND cert.not_before <= clock_timestamp()
+               AND COALESCE(cert.grace_until, cert.not_after) > clock_timestamp()
+        ) THEN RAISE EXCEPTION 'MACHINE_CREDENTIAL_MTLS_CERTIFICATE_INVALID' USING ERRCODE = '23514'; END IF;
+    ELSIF OLD.credential_state = 'ACTIVE' AND NEW.credential_state = 'ROTATING' THEN
+        v_allowed := true;
+    ELSIF OLD.credential_state = 'ROTATING' AND NEW.credential_state = 'ACTIVE' THEN
+        v_allowed := true;
+        IF NEW.expires_at <= clock_timestamp() THEN RAISE EXCEPTION 'MACHINE_CREDENTIAL_EXPIRED' USING ERRCODE = '23514'; END IF;
+    ELSIF OLD.credential_state IN ('PENDING', 'ACTIVE', 'ROTATING') AND NEW.credential_state IN ('EXPIRED', 'REVOKED', 'COMPROMISED') THEN
+        v_allowed := true;
+    ELSIF OLD.credential_state = 'COMPROMISED' AND NEW.credential_state = 'REVOKED' THEN
+        v_allowed := true;
+    END IF;
+    IF NOT v_allowed THEN RAISE EXCEPTION 'INVALID_STATE_TRANSITION: Machine Credential % -> %', OLD.credential_state, NEW.credential_state USING ERRCODE = '23514'; END IF;
+    IF NEW.credential_state IN ('EXPIRED', 'REVOKED', 'COMPROMISED') AND NULLIF(btrim(NEW.state_reason_code), '') IS NULL THEN
+        RAISE EXCEPTION 'MACHINE_CREDENTIAL_STATE_REASON_REQUIRED' USING ERRCODE = '23514';
+    END IF;
+    IF NEW.credential_state = 'EXPIRED' AND OLD.expires_at > clock_timestamp() THEN RAISE EXCEPTION 'MACHINE_CREDENTIAL_NOT_EXPIRED' USING ERRCODE = '23514';
+    ELSIF NEW.credential_state = 'REVOKED' THEN NEW.revoked_at := clock_timestamp();
+    ELSIF NEW.credential_state = 'COMPROMISED' THEN
+        NEW.compromised_at := clock_timestamp();
+        UPDATE workload.machine_principal
+           SET principal_state = 'COMPROMISED', state_reason_code = 'CREDENTIAL_COMPROMISED'
+         WHERE id = NEW.machine_principal_id AND principal_state IN ('ACTIVE', 'SUSPENDED');
+    END IF;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION workload.fn_machine_credential_state_guard() IS 'Machine Credential 强制从 PENDING 激活并受控轮换；替代链、凭证材料类型、签名密钥或 mTLS 证书均须有效，到期、撤销和失陷不可恢复。';
+
+CREATE OR REPLACE FUNCTION workload.fn_trust_bundle_state_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_allowed boolean := false;
+    v_expected_hash bytea;
+BEGIN
+    v_expected_hash := core.fn_hash_jsonb(jsonb_build_object(
+        'trust_domain', NEW.trust_domain,
+        'bundle_version', NEW.bundle_version,
+        'issuer', NEW.issuer,
+        'allowed_audiences', ARRAY(SELECT x FROM unnest(NEW.allowed_audiences) AS x ORDER BY x),
+        'environment', NEW.environment,
+        'selector_schema', NEW.selector_schema,
+        'public_material', NEW.public_material,
+        'max_attestation_age_seconds', NEW.max_attestation_age_seconds,
+        'active_until_epoch', CASE WHEN NEW.active_until IS NULL THEN NULL ELSE extract(epoch FROM NEW.active_until) END
+    ));
+    IF NEW.bundle_context_hash <> v_expected_hash THEN
+        RAISE EXCEPTION 'TRUST_BUNDLE_CONTEXT_HASH_MISMATCH' USING ERRCODE = '23514';
+    END IF;
+
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.bundle_state <> 'DRAFT'
+           OR NEW.approval_case_id IS NOT NULL
+           OR num_nonnulls(NEW.validated_at, NEW.approved_at, NEW.active_from, NEW.verify_only_at, NEW.revoked_at, NEW.retired_at) <> 0 THEN
+            RAISE EXCEPTION 'TRUST_BUNDLE_INITIAL_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF OLD.bundle_state <> 'DRAFT' AND (NEW.trust_domain, NEW.bundle_version, NEW.issuer, NEW.allowed_audiences,
+        NEW.environment, NEW.selector_schema, NEW.public_material, NEW.max_attestation_age_seconds,
+        NEW.bundle_context_hash, NEW.active_until)
+       IS DISTINCT FROM
+       (OLD.trust_domain, OLD.bundle_version, OLD.issuer, OLD.allowed_audiences,
+        OLD.environment, OLD.selector_schema, OLD.public_material, OLD.max_attestation_age_seconds,
+        OLD.bundle_context_hash, OLD.active_until) THEN
+        RAISE EXCEPTION 'TRUST_BUNDLE_CONTEXT_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    IF NEW.approval_case_id IS DISTINCT FROM OLD.approval_case_id
+       AND NOT (OLD.bundle_state = 'VALIDATED' AND NEW.bundle_state = 'APPROVED'
+                AND OLD.approval_case_id IS NULL AND NEW.approval_case_id IS NOT NULL) THEN
+        RAISE EXCEPTION 'TRUST_BUNDLE_APPROVAL_BINDING_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    IF OLD.bundle_state = 'DRAFT' AND NEW.bundle_state = 'DRAFT' THEN
+        IF (NEW.approval_case_id, NEW.validated_at, NEW.approved_at, NEW.active_from, NEW.verify_only_at, NEW.revoked_at, NEW.retired_at)
+           IS DISTINCT FROM (OLD.approval_case_id, OLD.validated_at, OLD.approved_at, OLD.active_from, OLD.verify_only_at, OLD.revoked_at, OLD.retired_at) THEN
+            RAISE EXCEPTION 'TRUST_BUNDLE_STATE_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF OLD.bundle_state = 'DRAFT' AND NEW.bundle_state = 'VALIDATED' THEN
+        v_allowed := true; NEW.validated_at := clock_timestamp();
+    ELSIF OLD.bundle_state = 'VALIDATED' AND NEW.bundle_state = 'APPROVED' THEN
+        v_allowed := true;
+        IF NOT EXISTS (
+            SELECT 1 FROM control.approval_case a
+             WHERE a.id = NEW.approval_case_id AND a.approval_type = 'KEY_OPERATION'
+               AND a.approval_state = 'EXECUTED'
+               AND a.tenant_id = '00000000-0000-0000-0000-000000000000'::uuid
+               AND a.resource_kind = 'TRUST_BUNDLE' AND a.resource_ref = NEW.public_id
+               AND a.after_value_hash = NEW.bundle_context_hash
+        ) THEN RAISE EXCEPTION 'TRUST_BUNDLE_APPROVAL_BINDING_INVALID' USING ERRCODE = '23514'; END IF;
+        NEW.approved_at := clock_timestamp();
+    ELSIF OLD.bundle_state = 'APPROVED' AND NEW.bundle_state = 'ACTIVE' THEN
+        v_allowed := true; NEW.active_from := clock_timestamp();
+        IF NEW.active_until IS NOT NULL AND NEW.active_until <= NEW.active_from THEN RAISE EXCEPTION 'TRUST_BUNDLE_ACTIVE_WINDOW_INVALID' USING ERRCODE = '23514'; END IF;
+    ELSIF OLD.bundle_state = 'ACTIVE' AND NEW.bundle_state = 'VERIFY_ONLY' THEN
+        v_allowed := true; NEW.verify_only_at := clock_timestamp();
+    ELSIF OLD.bundle_state IN ('ACTIVE', 'VERIFY_ONLY') AND NEW.bundle_state = 'RETIRED' THEN
+        v_allowed := true; NEW.retired_at := clock_timestamp();
+    ELSIF OLD.bundle_state NOT IN ('REVOKED', 'RETIRED') AND NEW.bundle_state = 'REVOKED' THEN
+        v_allowed := true;
+        IF NULLIF(btrim(NEW.state_reason_code), '') IS NULL THEN RAISE EXCEPTION 'TRUST_BUNDLE_REVOKE_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+        NEW.revoked_at := clock_timestamp();
+    END IF;
+    IF NOT v_allowed THEN RAISE EXCEPTION 'INVALID_STATE_TRANSITION: Trust Bundle % -> %', OLD.bundle_state, NEW.bundle_state USING ERRCODE = '23514'; END IF;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION workload.fn_trust_bundle_state_guard() IS 'Trust Bundle 强制草稿、校验、审批、激活、仅验证、退役或紧急撤销；审批精确绑定不可变内容摘要。';
+
+CREATE OR REPLACE FUNCTION workload.fn_machine_state_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE v_allowed boolean := false;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.principal_state <> 'PROVISIONING'
+           OR num_nonnulls(NEW.suspended_at, NEW.compromised_at, NEW.retired_at, NEW.last_revalidated_at, NEW.last_revalidation_evidence_hash) <> 0 THEN
+            RAISE EXCEPTION 'MACHINE_PRINCIPAL_INITIAL_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF OLD.principal_state = NEW.principal_state THEN
+        IF (NEW.suspended_at, NEW.compromised_at, NEW.retired_at, NEW.last_revalidated_at,
+            NEW.last_revalidation_evidence_hash, NEW.state_reason_code)
+           IS DISTINCT FROM
+           (OLD.suspended_at, OLD.compromised_at, OLD.retired_at, OLD.last_revalidated_at,
+            OLD.last_revalidation_evidence_hash, OLD.state_reason_code) THEN
+            RAISE EXCEPTION 'MACHINE_STATE_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF OLD.principal_state = 'PROVISIONING' AND NEW.principal_state = 'ACTIVE'
+       OR OLD.principal_state = 'SUSPENDED' AND NEW.principal_state = 'ACTIVE' THEN
+        v_allowed := true;
+        IF NEW.last_revalidation_evidence_hash IS NULL OR NEW.last_revalidation_evidence_hash IS NOT DISTINCT FROM OLD.last_revalidation_evidence_hash THEN
+            RAISE EXCEPTION 'MACHINE_REVALIDATION_EVIDENCE_REQUIRED' USING ERRCODE = '23514';
+        END IF;
+        IF NEW.expires_at <= clock_timestamp() THEN RAISE EXCEPTION 'MACHINE_PRINCIPAL_EXPIRED' USING ERRCODE = '23514'; END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM workload.machine_credential mc
+             WHERE mc.machine_principal_id = NEW.id AND mc.credential_state = 'ACTIVE'
+               AND mc.activates_at <= clock_timestamp() AND mc.expires_at > clock_timestamp()
+        ) THEN RAISE EXCEPTION 'MACHINE_ACTIVE_CREDENTIAL_REQUIRED' USING ERRCODE = '23514'; END IF;
+        NEW.last_revalidated_at := clock_timestamp();
+    ELSIF OLD.principal_state = 'ACTIVE' AND NEW.principal_state = 'SUSPENDED' THEN
+        v_allowed := true; NEW.suspended_at := clock_timestamp();
+    ELSIF OLD.principal_state IN ('ACTIVE', 'SUSPENDED') AND NEW.principal_state = 'COMPROMISED' THEN
+        v_allowed := true; NEW.compromised_at := clock_timestamp();
+    ELSIF OLD.principal_state IN ('ACTIVE', 'SUSPENDED', 'COMPROMISED') AND NEW.principal_state = 'RETIRED' THEN
+        v_allowed := true; NEW.retired_at := clock_timestamp();
+    END IF;
+    IF NOT v_allowed THEN RAISE EXCEPTION 'INVALID_STATE_TRANSITION: Machine Principal % -> %', OLD.principal_state, NEW.principal_state USING ERRCODE = '23514'; END IF;
+    IF NEW.principal_state IN ('SUSPENDED', 'COMPROMISED', 'RETIRED') AND NULLIF(btrim(NEW.state_reason_code), '') IS NULL THEN
+        RAISE EXCEPTION 'MACHINE_STATE_REASON_REQUIRED' USING ERRCODE = '23514';
+    END IF;
+    NEW.principal_security_epoch := GREATEST(NEW.principal_security_epoch, OLD.principal_security_epoch + 1);
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION workload.fn_machine_state_guard() IS 'Machine Principal 强制从 PROVISIONING 激活；暂停后须携带新复核证据，失陷只能退役，状态变化推进 security epoch。';
+
+CREATE OR REPLACE FUNCTION workload.fn_attestation_state_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE v_allowed boolean := false;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.attestation_state <> 'ATTESTATION_RECEIVED'
+           OR num_nonnulls(NEW.verified_at, NEW.credential_issued_at, NEW.expired_at, NEW.revoked_at, NEW.rejection_reason_code, NEW.revoke_reason_code) <> 0 THEN
+            RAISE EXCEPTION 'ATTESTATION_INITIAL_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF (NEW.machine_principal_id, NEW.trust_bundle_id, NEW.issuer, NEW.audience, NEW.nonce_hash,
+        NEW.jti_hash, NEW.selector_hash, NEW.evidence_hash, NEW.environment, NEW.received_at, NEW.expires_at)
+       IS DISTINCT FROM
+       (OLD.machine_principal_id, OLD.trust_bundle_id, OLD.issuer, OLD.audience, OLD.nonce_hash,
+        OLD.jti_hash, OLD.selector_hash, OLD.evidence_hash, OLD.environment, OLD.received_at, OLD.expires_at) THEN
+        RAISE EXCEPTION 'ATTESTATION_CONTEXT_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    IF OLD.attestation_state = 'ATTESTATION_RECEIVED' AND NEW.attestation_state = 'VERIFIED' THEN
+        v_allowed := true;
+        IF NOT EXISTS (
+            SELECT 1 FROM workload.machine_principal mp
+            JOIN workload.trust_bundle b ON b.id = NEW.trust_bundle_id
+             WHERE mp.id = NEW.machine_principal_id AND mp.principal_state = 'ACTIVE'
+               AND mp.environment = NEW.environment AND mp.trust_domain = b.trust_domain
+               AND b.bundle_state IN ('ACTIVE', 'VERIFY_ONLY') AND b.environment = NEW.environment AND b.issuer = NEW.issuer
+               AND NEW.audience = ANY(b.allowed_audiences)
+               AND (b.active_from IS NULL OR b.active_from <= clock_timestamp())
+               AND (b.active_until IS NULL OR b.active_until > clock_timestamp())
+               AND NEW.received_at >= clock_timestamp() - make_interval(secs => b.max_attestation_age_seconds)
+               AND NEW.expires_at > clock_timestamp()
+        ) THEN RAISE EXCEPTION 'ATTESTATION_TRUST_CONTEXT_INVALID' USING ERRCODE = '23514'; END IF;
+        NEW.verified_at := clock_timestamp();
+    ELSIF OLD.attestation_state = 'VERIFIED' AND NEW.attestation_state = 'CREDENTIAL_ISSUED' THEN
+        v_allowed := true; NEW.credential_issued_at := clock_timestamp();
+    ELSIF OLD.attestation_state = 'CREDENTIAL_ISSUED' AND NEW.attestation_state = 'EXPIRED' THEN
+        v_allowed := true;
+        IF OLD.expires_at > clock_timestamp() THEN RAISE EXCEPTION 'ATTESTATION_NOT_EXPIRED' USING ERRCODE = '23514'; END IF;
+        NEW.expired_at := clock_timestamp();
+    ELSIF OLD.attestation_state = 'CREDENTIAL_ISSUED' AND NEW.attestation_state = 'REVOKED' THEN
+        v_allowed := true;
+        IF NULLIF(btrim(NEW.revoke_reason_code), '') IS NULL THEN RAISE EXCEPTION 'ATTESTATION_REVOKE_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+        NEW.revoked_at := clock_timestamp();
+    ELSIF OLD.attestation_state = 'ATTESTATION_RECEIVED' AND NEW.attestation_state = 'REJECTED' THEN
+        v_allowed := true;
+        IF NULLIF(btrim(NEW.rejection_reason_code), '') IS NULL THEN RAISE EXCEPTION 'ATTESTATION_REJECTION_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+    END IF;
+    IF NOT v_allowed THEN RAISE EXCEPTION 'INVALID_STATE_TRANSITION: Workload Attestation % -> %', OLD.attestation_state, NEW.attestation_state USING ERRCODE = '23514'; END IF;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION workload.fn_attestation_state_guard() IS 'Workload Attestation 按接收、验证、签发、到期/撤销或拒绝推进；信任包、环境、受众和不可变证明上下文由数据库复核。';
+
+CREATE OR REPLACE FUNCTION crypto.fn_certificate_state_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE v_allowed boolean := false;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.certificate_state <> 'ISSUED' OR num_nonnulls(NEW.activated_at, NEW.expired_at, NEW.revoked_at) <> 0 THEN
+            RAISE EXCEPTION 'CERTIFICATE_INITIAL_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF (NEW.certificate_kind, NEW.serial_number, NEW.thumbprint_sha256, NEW.subject_dn, NEW.issuer_dn,
+        NEW.san_values, NEW.public_certificate_pem, NEW.private_key_asset_id, NEW.owner_ref,
+        NEW.environment, NEW.issued_at, NEW.not_before, NEW.not_after)
+       IS DISTINCT FROM
+       (OLD.certificate_kind, OLD.serial_number, OLD.thumbprint_sha256, OLD.subject_dn, OLD.issuer_dn,
+        OLD.san_values, OLD.public_certificate_pem, OLD.private_key_asset_id, OLD.owner_ref,
+        OLD.environment, OLD.issued_at, OLD.not_before, OLD.not_after) THEN
+        RAISE EXCEPTION 'CERTIFICATE_CONTEXT_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    IF OLD.certificate_state = 'ISSUED' AND NEW.certificate_state = 'ACTIVE' THEN
+        v_allowed := true;
+        IF NEW.not_before > clock_timestamp() OR NEW.not_after <= clock_timestamp() THEN RAISE EXCEPTION 'CERTIFICATE_OUTSIDE_WINDOW' USING ERRCODE = '23514'; END IF;
+        IF NEW.private_key_asset_id IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM crypto.key_asset k WHERE k.id = NEW.private_key_asset_id
+               AND k.environment = NEW.environment AND k.key_state IN ('SIGNING_AND_VERIFYING', 'VERIFY_ONLY')
+        ) THEN RAISE EXCEPTION 'CERTIFICATE_KEY_STATE_INVALID' USING ERRCODE = '23514'; END IF;
+        NEW.activated_at := clock_timestamp();
+    ELSIF OLD.certificate_state = 'ACTIVE' AND NEW.certificate_state = 'GRACE' THEN
+        v_allowed := true;
+        IF NEW.grace_until IS NULL OR NEW.grace_until <= clock_timestamp() THEN RAISE EXCEPTION 'CERTIFICATE_GRACE_WINDOW_REQUIRED' USING ERRCODE = '23514'; END IF;
+    ELSIF OLD.certificate_state IN ('ISSUED', 'ACTIVE', 'GRACE') AND NEW.certificate_state = 'EXPIRED' THEN
+        v_allowed := true;
+        IF OLD.not_after > clock_timestamp() AND (OLD.grace_until IS NULL OR OLD.grace_until > clock_timestamp()) THEN RAISE EXCEPTION 'CERTIFICATE_NOT_EXPIRED' USING ERRCODE = '23514'; END IF;
+        NEW.expired_at := clock_timestamp();
+    ELSIF OLD.certificate_state IN ('ISSUED', 'ACTIVE', 'GRACE') AND NEW.certificate_state = 'REVOKED' THEN
+        v_allowed := true;
+        IF NULLIF(btrim(NEW.revoke_reason_code), '') IS NULL THEN RAISE EXCEPTION 'CERTIFICATE_REVOKE_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+        NEW.revoked_at := clock_timestamp();
+    END IF;
+    IF NOT v_allowed THEN RAISE EXCEPTION 'INVALID_STATE_TRANSITION: Certificate % -> %', OLD.certificate_state, NEW.certificate_state USING ERRCODE = '23514'; END IF;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION crypto.fn_certificate_state_guard() IS 'Certificate 强制 ISSUED→ACTIVE→GRACE/EXPIRED，或紧急 REVOKED；证书内容不可变并校验密钥、环境和有效窗口。';
+
+CREATE OR REPLACE FUNCTION crypto.fn_jwks_state_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE v_allowed boolean := false;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.release_state <> 'DRAFT'
+           OR num_nonnulls(NEW.published_at, NEW.activated_at, NEW.superseded_at, NEW.revoked_at) <> 0 THEN
+            RAISE EXCEPTION 'JWKS_INITIAL_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF OLD.release_state <> 'DRAFT' AND (NEW.issuer, NEW.environment, NEW.jwks_version,
+        NEW.key_asset_ids, NEW.document_hash, NEW.cache_max_age_seconds, NEW.clock_skew_seconds, NEW.expires_at)
+       IS DISTINCT FROM
+       (OLD.issuer, OLD.environment, OLD.jwks_version,
+        OLD.key_asset_ids, OLD.document_hash, OLD.cache_max_age_seconds, OLD.clock_skew_seconds, OLD.expires_at) THEN
+        RAISE EXCEPTION 'JWKS_CONTENT_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    IF OLD.release_state = 'DRAFT' AND NEW.release_state = 'DRAFT' THEN
+        IF (NEW.published_at, NEW.activated_at, NEW.superseded_at, NEW.revoked_at, NEW.revoke_reason_code)
+           IS DISTINCT FROM (OLD.published_at, OLD.activated_at, OLD.superseded_at, OLD.revoked_at, OLD.revoke_reason_code) THEN
+            RAISE EXCEPTION 'JWKS_STATE_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF OLD.release_state = 'DRAFT' AND NEW.release_state = 'PUBLISHED' THEN
+        v_allowed := true;
+        IF EXISTS (
+            SELECT 1 FROM unnest(NEW.key_asset_ids) key_id
+             LEFT JOIN crypto.key_asset k ON k.id = key_id
+            WHERE k.id IS NULL OR k.environment <> NEW.environment OR k.key_use <> 'TOKEN_SIGNING'
+               OR k.key_state NOT IN ('PUBLISHED', 'SIGNING_AND_VERIFYING', 'VERIFY_ONLY')
+        ) THEN RAISE EXCEPTION 'JWKS_KEY_SET_INVALID' USING ERRCODE = '23514'; END IF;
+        NEW.published_at := clock_timestamp();
+    ELSIF OLD.release_state = 'PUBLISHED' AND NEW.release_state = 'ACTIVE' THEN
+        v_allowed := true;
+        IF clock_timestamp() < OLD.published_at + make_interval(secs => 2 * NEW.cache_max_age_seconds) THEN
+            RAISE EXCEPTION 'JWKS_PROPAGATION_WINDOW_NOT_SATISFIED' USING ERRCODE = '23514';
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM unnest(NEW.key_asset_ids) key_id JOIN crypto.key_asset k ON k.id = key_id
+             WHERE k.key_state = 'SIGNING_AND_VERIFYING' AND k.environment = NEW.environment
+        ) THEN RAISE EXCEPTION 'JWKS_ACTIVE_SIGNING_KEY_REQUIRED' USING ERRCODE = '23514'; END IF;
+        NEW.activated_at := clock_timestamp();
+    ELSIF OLD.release_state = 'ACTIVE' AND NEW.release_state = 'SUPERSEDED' THEN
+        v_allowed := true; NEW.superseded_at := clock_timestamp();
+    ELSIF OLD.release_state NOT IN ('SUPERSEDED', 'REVOKED') AND NEW.release_state = 'REVOKED' THEN
+        v_allowed := true;
+        IF NULLIF(btrim(NEW.revoke_reason_code), '') IS NULL THEN RAISE EXCEPTION 'JWKS_REVOKE_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+        NEW.revoked_at := clock_timestamp();
+    END IF;
+    IF NOT v_allowed THEN RAISE EXCEPTION 'INVALID_STATE_TRANSITION: JWKS % -> %', OLD.release_state, NEW.release_state USING ERRCODE = '23514'; END IF;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION crypto.fn_jwks_state_guard() IS 'JWKS Release 强制先发布再激活；密钥集合必须属于同环境且包含活动签名键，取代或撤销后不可恢复。';
+
+CREATE OR REPLACE FUNCTION control.fn_security_exception_state_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_allowed boolean := false;
+    v_expected_hash bytea;
+BEGIN
+    v_expected_hash := core.fn_hash_jsonb(jsonb_build_object(
+        'exception_code', NEW.exception_code,
+        'requirement_ids', ARRAY(SELECT x FROM unnest(NEW.requirement_ids) AS x ORDER BY x),
+        'scope_definition', NEW.scope_definition,
+        'risk_statement', NEW.risk_statement,
+        'compensating_controls', NEW.compensating_controls,
+        'risk_acceptor_ref', NEW.risk_acceptor_ref,
+        'owner_ref', NEW.owner_ref,
+        'tenant_id', NEW.tenant_id::text,
+        'starts_at_epoch', extract(epoch FROM NEW.starts_at),
+        'expires_at_epoch', extract(epoch FROM NEW.expires_at)
+    ));
+    IF NEW.exception_context_hash <> v_expected_hash THEN
+        RAISE EXCEPTION 'SECURITY_EXCEPTION_CONTEXT_HASH_MISMATCH' USING ERRCODE = '23514';
+    END IF;
+
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.exception_state <> 'DRAFT' OR NEW.approval_case_id IS NOT NULL OR NEW.state_reason_code IS NOT NULL
+           OR num_nonnulls(NEW.approved_at, NEW.activated_at, NEW.expired_at, NEW.revoked_at, NEW.tightened_at) <> 0 THEN
+            RAISE EXCEPTION 'SECURITY_EXCEPTION_INITIAL_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF OLD.exception_state <> 'DRAFT' AND (NEW.exception_code, NEW.requirement_ids, NEW.scope_definition, NEW.risk_statement,
+        NEW.compensating_controls, NEW.risk_acceptor_ref, NEW.owner_ref, NEW.approval_case_id,
+        NEW.tenant_id, NEW.exception_context_hash, NEW.starts_at, NEW.expires_at)
+       IS DISTINCT FROM
+       (OLD.exception_code, OLD.requirement_ids, OLD.scope_definition, OLD.risk_statement,
+        OLD.compensating_controls, OLD.risk_acceptor_ref, OLD.owner_ref, OLD.approval_case_id,
+        OLD.tenant_id, OLD.exception_context_hash, OLD.starts_at, OLD.expires_at) THEN
+        RAISE EXCEPTION 'SECURITY_EXCEPTION_CONTEXT_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    IF OLD.exception_state = 'DRAFT' AND NEW.exception_state = 'DRAFT' THEN
+        IF (NEW.approval_case_id, NEW.approved_at, NEW.activated_at, NEW.expired_at, NEW.revoked_at, NEW.tightened_at, NEW.state_reason_code)
+           IS DISTINCT FROM
+           (OLD.approval_case_id, OLD.approved_at, OLD.activated_at, OLD.expired_at, OLD.revoked_at, OLD.tightened_at, OLD.state_reason_code) THEN
+            RAISE EXCEPTION 'SECURITY_EXCEPTION_STATE_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF OLD.exception_state = 'DRAFT' AND NEW.exception_state = 'APPROVED' THEN
+        v_allowed := true;
+        IF NOT EXISTS (
+            SELECT 1 FROM control.approval_case a
+             WHERE a.id = NEW.approval_case_id AND a.approval_type = 'SECURITY_EXCEPTION'
+               AND a.approval_state = 'EXECUTED' AND a.tenant_id = NEW.tenant_id
+               AND a.resource_kind = 'SECURITY_EXCEPTION' AND a.resource_ref = NEW.public_id
+               AND a.after_value_hash = NEW.exception_context_hash
+        ) THEN RAISE EXCEPTION 'SECURITY_EXCEPTION_APPROVAL_BINDING_INVALID' USING ERRCODE = '23514'; END IF;
+        NEW.approved_at := clock_timestamp();
+    ELSIF OLD.exception_state = 'APPROVED' AND NEW.exception_state = 'ACTIVE' THEN
+        v_allowed := true;
+        IF NEW.starts_at > clock_timestamp() OR NEW.expires_at <= clock_timestamp() THEN RAISE EXCEPTION 'SECURITY_EXCEPTION_OUTSIDE_WINDOW' USING ERRCODE = '23514'; END IF;
+        NEW.activated_at := clock_timestamp();
+    ELSIF OLD.exception_state = 'APPROVED' AND NEW.exception_state = 'EXPIRED' THEN
+        v_allowed := true;
+        IF OLD.expires_at > clock_timestamp() THEN RAISE EXCEPTION 'SECURITY_EXCEPTION_NOT_EXPIRED' USING ERRCODE = '23514'; END IF;
+        NEW.expired_at := clock_timestamp();
+    ELSIF OLD.exception_state = 'ACTIVE' AND NEW.exception_state = 'TIGHTENED' THEN
+        v_allowed := true;
+        IF OLD.expires_at > clock_timestamp() AND NULLIF(btrim(NEW.state_reason_code), '') IS NULL THEN
+            RAISE EXCEPTION 'SECURITY_EXCEPTION_EARLY_TIGHTEN_REASON_REQUIRED' USING ERRCODE = '23514';
+        END IF;
+        NEW.tightened_at := clock_timestamp();
+    ELSIF OLD.exception_state IN ('DRAFT', 'APPROVED', 'ACTIVE') AND NEW.exception_state = 'REVOKED' THEN
+        v_allowed := true;
+        IF NULLIF(btrim(NEW.state_reason_code), '') IS NULL THEN RAISE EXCEPTION 'SECURITY_EXCEPTION_REVOKE_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+        NEW.revoked_at := clock_timestamp();
+    END IF;
+    IF NOT v_allowed THEN RAISE EXCEPTION 'INVALID_STATE_TRANSITION: Security Exception % -> %', OLD.exception_state, NEW.exception_state USING ERRCODE = '23514'; END IF;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION control.fn_security_exception_state_guard() IS '安全例外从草稿经绑定审批后限时激活；未激活例外可过期，已激活例外到期默认收紧，撤销需原因。';
+
+CREATE OR REPLACE FUNCTION control.fn_break_glass_state_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_allowed boolean := false;
+    v_expected_hash bytea;
+BEGIN
+    v_expected_hash := core.fn_hash_jsonb(jsonb_build_object(
+        'user_id', NEW.user_id::text,
+        'tenant_id', NEW.tenant_id::text,
+        'permission_codes', ARRAY(SELECT x FROM unnest(NEW.permission_codes) AS x ORDER BY x),
+        'justification', NEW.justification,
+        'expires_at_epoch', extract(epoch FROM NEW.expires_at),
+        'post_review_due_at_epoch', extract(epoch FROM NEW.post_review_due_at)
+    ));
+    IF NEW.grant_context_hash <> v_expected_hash THEN
+        RAISE EXCEPTION 'BREAK_GLASS_CONTEXT_HASH_MISMATCH' USING ERRCODE = '23514';
+    END IF;
+
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.grant_state <> 'PENDING' OR NEW.approval_case_id IS NOT NULL OR NEW.revoke_reason_code IS NOT NULL
+           OR num_nonnulls(NEW.activated_at, NEW.expired_at, NEW.revoked_at) <> 0 THEN
+            RAISE EXCEPTION 'BREAK_GLASS_INITIAL_STATE_INVALID' USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF (NEW.user_id, NEW.tenant_id, NEW.permission_codes, NEW.justification,
+        NEW.grant_context_hash, NEW.expires_at, NEW.post_review_due_at)
+       IS DISTINCT FROM
+       (OLD.user_id, OLD.tenant_id, OLD.permission_codes, OLD.justification,
+        OLD.grant_context_hash, OLD.expires_at, OLD.post_review_due_at) THEN
+        RAISE EXCEPTION 'BREAK_GLASS_CONTEXT_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    IF NEW.approval_case_id IS DISTINCT FROM OLD.approval_case_id
+       AND NOT (OLD.grant_state = 'PENDING' AND NEW.grant_state = 'ACTIVE'
+                AND OLD.approval_case_id IS NULL AND NEW.approval_case_id IS NOT NULL) THEN
+        RAISE EXCEPTION 'BREAK_GLASS_APPROVAL_BINDING_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    IF OLD.grant_state = 'PENDING' AND NEW.grant_state = 'PENDING' THEN
+        IF (NEW.approval_case_id, NEW.activated_at, NEW.expired_at, NEW.revoked_at, NEW.revoke_reason_code)
+           IS DISTINCT FROM (OLD.approval_case_id, OLD.activated_at, OLD.expired_at, OLD.revoked_at, OLD.revoke_reason_code) THEN
+            RAISE EXCEPTION 'BREAK_GLASS_STATE_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF OLD.grant_state IN ('EXPIRED', 'REVOKED') AND NEW.grant_state = OLD.grant_state THEN
+        IF OLD.post_reviewed_at IS NULL AND NEW.post_reviewed_at IS NOT NULL
+           AND (to_jsonb(NEW) - 'post_reviewed_at') = (to_jsonb(OLD) - 'post_reviewed_at') THEN
+            NEW.post_reviewed_at := clock_timestamp();
+            RETURN NEW;
+        END IF;
+        RAISE EXCEPTION 'BREAK_GLASS_TERMINAL_EVIDENCE_IMMUTABLE' USING ERRCODE = '55000';
+    END IF;
+    IF OLD.grant_state = 'PENDING' AND NEW.grant_state = 'ACTIVE' THEN
+        v_allowed := true;
+        IF NEW.expires_at <= clock_timestamp() THEN RAISE EXCEPTION 'BREAK_GLASS_EXPIRED' USING ERRCODE = '23514'; END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM control.approval_case a
+             WHERE a.id = NEW.approval_case_id AND a.approval_type = 'BREAK_GLASS'
+               AND a.approval_state = 'EXECUTED' AND a.tenant_id = NEW.tenant_id
+               AND a.resource_kind = 'BREAK_GLASS' AND a.resource_ref = NEW.public_id
+               AND a.after_value_hash = NEW.grant_context_hash
+        ) THEN RAISE EXCEPTION 'BREAK_GLASS_APPROVAL_BINDING_INVALID' USING ERRCODE = '23514'; END IF;
+        NEW.activated_at := clock_timestamp();
+    ELSIF OLD.grant_state IN ('PENDING', 'ACTIVE') AND NEW.grant_state = 'EXPIRED' THEN
+        v_allowed := true;
+        IF OLD.expires_at > clock_timestamp() THEN RAISE EXCEPTION 'BREAK_GLASS_NOT_EXPIRED' USING ERRCODE = '23514'; END IF;
+        NEW.expired_at := clock_timestamp();
+    ELSIF OLD.grant_state IN ('PENDING', 'ACTIVE') AND NEW.grant_state = 'REVOKED' THEN
+        v_allowed := true;
+        IF NULLIF(btrim(NEW.revoke_reason_code), '') IS NULL THEN RAISE EXCEPTION 'BREAK_GLASS_REVOKE_REASON_REQUIRED' USING ERRCODE = '23514'; END IF;
+        NEW.revoked_at := clock_timestamp();
+    END IF;
+    IF NOT v_allowed THEN RAISE EXCEPTION 'INVALID_STATE_TRANSITION: Break-glass % -> %', OLD.grant_state, NEW.grant_state USING ERRCODE = '23514'; END IF;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION control.fn_break_glass_state_guard() IS 'Break-glass 强制从 PENDING 经精确绑定审批激活；最长四小时，到期或带原因撤销后不可恢复。';
+
+DROP TRIGGER IF EXISTS trg_login_transaction_terminal ON authn.login_transaction;
+CREATE TRIGGER trg_login_transaction_state BEFORE INSERT OR UPDATE ON authn.login_transaction FOR EACH ROW
+    EXECUTE FUNCTION authn.fn_login_transaction_state_guard();
+DROP TRIGGER IF EXISTS trg_authenticator_terminal ON authn.authenticator;
+CREATE TRIGGER trg_challenge_state BEFORE INSERT OR UPDATE ON authn.verification_challenge FOR EACH ROW
+    EXECUTE FUNCTION authn.fn_challenge_state_guard();
+CREATE TRIGGER trg_challenge_terminal BEFORE UPDATE ON authn.verification_challenge FOR EACH ROW
+    EXECUTE FUNCTION core.fn_terminal_state_guard('challenge_state', 'CONSUMED', 'EXPIRED', 'LOCKED', 'CANCELLED');
+
+DROP TRIGGER IF EXISTS trg_user_account_terminal ON iam.user_account;
+CREATE TRIGGER trg_user_account_state BEFORE INSERT OR UPDATE ON iam.user_account FOR EACH ROW
+    EXECUTE FUNCTION iam.fn_user_lifecycle_guard();
+CREATE TRIGGER trg_identifier_state BEFORE INSERT OR UPDATE ON iam.identifier FOR EACH ROW
+    EXECUTE FUNCTION iam.fn_identifier_state_guard();
+DROP TRIGGER IF EXISTS trg_operation_terminal ON core.async_operation;
+CREATE TRIGGER trg_operation_state BEFORE INSERT OR UPDATE ON core.async_operation FOR EACH ROW
+    EXECUTE FUNCTION core.fn_operation_state_guard();
+
+CREATE TRIGGER trg_device_state BEFORE INSERT OR UPDATE ON oauth.device FOR EACH ROW
+    EXECUTE FUNCTION oauth.fn_device_state_guard();
+
+DROP TRIGGER IF EXISTS trg_business_line_terminal ON org.business_line;
+CREATE TRIGGER trg_business_line_state BEFORE INSERT OR UPDATE ON org.business_line FOR EACH ROW
+    EXECUTE FUNCTION org.fn_business_line_state_guard();
+DROP TRIGGER IF EXISTS trg_tenant_terminal ON org.tenant;
+CREATE TRIGGER trg_tenant_state BEFORE INSERT OR UPDATE ON org.tenant FOR EACH ROW
+    EXECUTE FUNCTION org.fn_tenant_state_guard();
+DROP TRIGGER IF EXISTS trg_organization_terminal ON org.organization;
+CREATE TRIGGER trg_organization_state BEFORE INSERT OR UPDATE ON org.organization FOR EACH ROW
+    EXECUTE FUNCTION org.fn_organization_state_guard();
+DROP TRIGGER IF EXISTS trg_membership_terminal ON org.membership;
+CREATE TRIGGER trg_membership_state BEFORE INSERT OR UPDATE ON org.membership FOR EACH ROW
+    EXECUTE FUNCTION org.fn_membership_state_guard();
+DROP TRIGGER IF EXISTS trg_invitation_terminal ON org.invitation;
+CREATE TRIGGER trg_invitation_state BEFORE INSERT OR UPDATE ON org.invitation FOR EACH ROW
+    EXECUTE FUNCTION org.fn_invitation_state_guard();
+
+DROP TRIGGER IF EXISTS trg_delegation_guard ON assurance.delegation;
+CREATE TRIGGER trg_delegation_guard BEFORE INSERT OR UPDATE ON assurance.delegation FOR EACH ROW
+    EXECUTE FUNCTION assurance.fn_delegation_guard();
+
+DROP TRIGGER IF EXISTS trg_machine_state ON workload.machine_principal;
+CREATE TRIGGER trg_machine_state BEFORE INSERT OR UPDATE ON workload.machine_principal FOR EACH ROW
+    EXECUTE FUNCTION workload.fn_machine_state_guard();
+CREATE TRIGGER trg_machine_credential_state BEFORE INSERT OR UPDATE ON workload.machine_credential FOR EACH ROW
+    EXECUTE FUNCTION workload.fn_machine_credential_state_guard();
+CREATE TRIGGER trg_trust_bundle_state BEFORE INSERT OR UPDATE ON workload.trust_bundle FOR EACH ROW
+    EXECUTE FUNCTION workload.fn_trust_bundle_state_guard();
+DROP TRIGGER IF EXISTS trg_attestation_terminal ON workload.workload_attestation;
+CREATE TRIGGER trg_attestation_state BEFORE INSERT OR UPDATE ON workload.workload_attestation FOR EACH ROW
+    EXECUTE FUNCTION workload.fn_attestation_state_guard();
+CREATE TRIGGER trg_attestation_terminal BEFORE UPDATE ON workload.workload_attestation FOR EACH ROW
+    EXECUTE FUNCTION core.fn_terminal_state_guard('attestation_state', 'EXPIRED', 'REVOKED', 'REJECTED');
+
+CREATE TRIGGER trg_certificate_state BEFORE INSERT OR UPDATE ON crypto.certificate_asset FOR EACH ROW
+    EXECUTE FUNCTION crypto.fn_certificate_state_guard();
+DROP TRIGGER IF EXISTS trg_jwks_release_guard ON crypto.jwks_release;
+DROP TRIGGER IF EXISTS trg_jwks_release_initial_state ON crypto.jwks_release;
+CREATE TRIGGER trg_jwks_state BEFORE INSERT OR UPDATE ON crypto.jwks_release FOR EACH ROW
+    EXECUTE FUNCTION crypto.fn_jwks_state_guard();
+
+CREATE TRIGGER trg_security_exception_state BEFORE INSERT OR UPDATE ON control.security_exception FOR EACH ROW
+    EXECUTE FUNCTION control.fn_security_exception_state_guard();
+CREATE TRIGGER trg_security_exception_terminal BEFORE UPDATE ON control.security_exception FOR EACH ROW
+    EXECUTE FUNCTION core.fn_terminal_state_guard('exception_state', 'EXPIRED', 'REVOKED', 'TIGHTENED');
+CREATE TRIGGER trg_break_glass_state BEFORE INSERT OR UPDATE ON control.break_glass_grant FOR EACH ROW
+    EXECUTE FUNCTION control.fn_break_glass_state_guard();
+CREATE TRIGGER trg_break_glass_terminal BEFORE UPDATE ON control.break_glass_grant FOR EACH ROW
+    EXECUTE FUNCTION core.fn_terminal_state_guard('grant_state', 'EXPIRED', 'REVOKED');
+
+DROP TRIGGER IF EXISTS trg_privacy_request_terminal ON privacy.privacy_request;
+CREATE TRIGGER trg_privacy_request_state BEFORE INSERT OR UPDATE ON privacy.privacy_request FOR EACH ROW
+    EXECUTE FUNCTION privacy.fn_privacy_request_state_guard();
+
+DROP TRIGGER IF EXISTS trg_migration_batch_guard ON migration.migration_batch;
+CREATE TRIGGER trg_migration_batch_guard BEFORE INSERT OR UPDATE ON migration.migration_batch FOR EACH ROW
+    EXECUTE FUNCTION migration.fn_batch_state_guard();
+
+-- -----------------------------------------------------------------------------
+-- 9. 为所有外键自动补齐前导列索引
 -- -----------------------------------------------------------------------------
 
 DO $$
@@ -2607,6 +4650,7 @@ END;
 $$;
 
 SELECT core.fn_apply_complete_column_comments();
+SELECT core.fn_apply_complete_object_comments();
 
 SELECT core.fn_register_migration(
     '075',
