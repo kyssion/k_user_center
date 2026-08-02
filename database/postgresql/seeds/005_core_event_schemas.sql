@@ -1,0 +1,41 @@
+\set ON_ERROR_STOP on
+
+SET ROLE iam_owner;
+
+-- 核心事件仅登记 Payload Schema；统一事件信封由 iam.outbox_events 独立字段承载。
+WITH seed(id, event_type, json_schema) AS (
+    VALUES
+        ('50000000-0000-0000-0000-000000000001'::uuid, 'user.created', '{"type":"object","properties":{"user_type":{"type":"string"}},"required":["user_type"],"additionalProperties":false}'::jsonb),
+        ('50000000-0000-0000-0000-000000000002'::uuid, 'user.lifecycle_changed', '{"type":"object","properties":{"previous_state":{"type":"string"},"current_state":{"type":"string"},"reason_code":{"type":["string","null"]}},"required":["previous_state","current_state"],"additionalProperties":false}'::jsonb),
+        ('50000000-0000-0000-0000-000000000003'::uuid, 'user.security_state_changed', '{"type":"object","properties":{"dimension":{"type":"string","enum":["authentication_lock","security_freeze"]},"previous_state":{"type":"string"},"current_state":{"type":"string"},"security_epoch":{"type":"integer","minimum":0}},"required":["dimension","previous_state","current_state","security_epoch"],"additionalProperties":false}'::jsonb),
+        ('50000000-0000-0000-0000-000000000004'::uuid, 'identity.bound', '{"type":"object","properties":{"identifier_type":{"type":"string"},"binding_id":{"type":"string","format":"uuid"}},"required":["identifier_type","binding_id"],"additionalProperties":false}'::jsonb),
+        ('50000000-0000-0000-0000-000000000005'::uuid, 'identity.unbound', '{"type":"object","properties":{"identifier_type":{"type":"string"},"binding_id":{"type":"string","format":"uuid"},"quarantine_until":{"type":["string","null"],"format":"date-time"}},"required":["identifier_type","binding_id"],"additionalProperties":false}'::jsonb),
+        ('50000000-0000-0000-0000-000000000006'::uuid, 'identity.merged', '{"type":"object","properties":{"source_user_id":{"type":"string","format":"uuid"},"canonical_user_id":{"type":"string","format":"uuid"}},"required":["source_user_id","canonical_user_id"],"additionalProperties":false}'::jsonb),
+        ('50000000-0000-0000-0000-000000000007'::uuid, 'profile.updated', '{"type":"object","properties":{"profile_version":{"type":"integer","minimum":0},"changed_fields":{"type":"array","items":{"type":"string"},"uniqueItems":true}},"required":["profile_version","changed_fields"],"additionalProperties":false}'::jsonb),
+        ('50000000-0000-0000-0000-000000000008'::uuid, 'membership.changed', '{"type":"object","properties":{"membership_id":{"type":"string","format":"uuid"},"previous_state":{"type":["string","null"]},"current_state":{"type":"string"}},"required":["membership_id","current_state"],"additionalProperties":false}'::jsonb),
+        ('50000000-0000-0000-0000-000000000009'::uuid, 'authenticator.changed', '{"type":"object","properties":{"authenticator_id":{"type":"string","format":"uuid"},"change_type":{"type":"string"}},"required":["authenticator_id","change_type"],"additionalProperties":false}'::jsonb),
+        ('50000000-0000-0000-0000-000000000010'::uuid, 'authenticator.compromised', '{"type":"object","properties":{"authenticator_id":{"type":"string","format":"uuid"},"user_security_epoch":{"type":"integer","minimum":0}},"required":["authenticator_id","user_security_epoch"],"additionalProperties":false}'::jsonb),
+        ('50000000-0000-0000-0000-000000000011'::uuid, 'session.revoked', '{"type":"object","properties":{"session_id":{"type":"string","format":"uuid"},"reason_code":{"type":"string"},"revocation_watermark":{"type":["integer","null"],"minimum":0}},"required":["session_id","reason_code"],"additionalProperties":false}'::jsonb),
+        ('50000000-0000-0000-0000-000000000012'::uuid, 'consent.changed', '{"type":"object","properties":{"consent_id":{"type":"string","format":"uuid"},"consent_epoch":{"type":"integer","minimum":0},"state":{"type":"string"}},"required":["consent_id","consent_epoch","state"],"additionalProperties":false}'::jsonb),
+        ('50000000-0000-0000-0000-000000000013'::uuid, 'consent.revoked', '{"type":"object","properties":{"consent_id":{"type":"string","format":"uuid"},"consent_epoch":{"type":"integer","minimum":0},"reason_code":{"type":["string","null"]}},"required":["consent_id","consent_epoch"],"additionalProperties":false}'::jsonb),
+        ('50000000-0000-0000-0000-000000000014'::uuid, 'authorization.policy_changed', '{"type":"object","properties":{"policy_version_ids":{"type":"array","items":{"type":"string","format":"uuid"},"minItems":1,"uniqueItems":true},"policy_set_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"required":["policy_version_ids","policy_set_digest"],"additionalProperties":false}'::jsonb),
+        ('50000000-0000-0000-0000-000000000015'::uuid, 'authorization.decision_recorded', '{"type":"object","properties":{"decision_id":{"type":"string","format":"uuid"},"decision":{"type":"string"},"valid_until":{"type":"string","format":"date-time"}},"required":["decision_id","decision","valid_until"],"additionalProperties":false}'::jsonb),
+        ('50000000-0000-0000-0000-000000000016'::uuid, 'risk.level_changed', '{"type":"object","properties":{"previous_level":{"type":["string","null"]},"current_level":{"type":"string"},"assessment_id":{"type":"string","format":"uuid"}},"required":["current_level","assessment_id"],"additionalProperties":false}'::jsonb),
+        ('50000000-0000-0000-0000-000000000017'::uuid, 'security.epoch_changed', '{"type":"object","properties":{"epoch_type":{"type":"string"},"previous_value":{"type":"integer","minimum":0},"current_value":{"type":"integer","minimum":0},"revocation_watermark":{"type":["integer","null"],"minimum":0}},"required":["epoch_type","previous_value","current_value"],"additionalProperties":false}'::jsonb),
+        ('50000000-0000-0000-0000-000000000018'::uuid, 'privacy.request_changed', '{"type":"object","properties":{"privacy_request_id":{"type":"string","format":"uuid"},"request_type":{"type":"string"},"previous_state":{"type":["string","null"]},"current_state":{"type":"string"}},"required":["privacy_request_id","request_type","current_state"],"additionalProperties":false}'::jsonb)
+), applied AS (
+INSERT INTO iam.event_schema_versions AS current_schema (
+    id, event_type, schema_version, compatibility_mode, json_schema, schema_digest, state, published_at
+)
+SELECT
+    id, event_type, 1, 'BACKWARD', json_schema,
+    encode(sha256(convert_to(json_schema::text, 'UTF8')), 'hex'),
+    'DRAFT', NULL
+FROM seed
+ON CONFLICT ON CONSTRAINT uq_event_schema_version DO UPDATE
+SET id = current_schema.id
+WHERE current_schema.id = EXCLUDED.id
+  AND current_schema.schema_digest = EXCLUDED.schema_digest
+RETURNING 1
+)
+SELECT 1 / CASE WHEN (SELECT count(*) FROM applied) = (SELECT count(*) FROM seed) THEN 1 ELSE 0 END AS seed_content_match;

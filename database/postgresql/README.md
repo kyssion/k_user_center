@@ -6,7 +6,7 @@
 
 1. 由平台管理员执行 `bootstrap/001_roles.sql`。
 2. 使用 `iam_migrator` 依文件名顺序执行 `migrations/*.sql`。
-3. 按环境批准情况执行 `seeds/*.sql`。
+3. 执行 `seeds/*.sql` 写入稳定目录和 DRAFT 控制面候选版本；由应用审批发布流程决定是否激活。
 4. 由高权限只读检查账号执行 `verification/*.sql`。
 5. 生产上线前将验证脚本的零异常结果保存为发布证据。
 
@@ -18,6 +18,8 @@
 - `*_id` 为逻辑引用，目标、作用域、状态和删除行为由代码校验。
 - `created_at`、`recorded_at` 使用数据库默认时间；更新时应用必须显式设置 `updated_at = CURRENT_TIMESTAMP`。
 - UUID 由应用生成，推荐 UUIDv7；数据库不替应用推导业务标识。
+- Seed 使用稳定业务键和内容摘要保证幂等；同键内容不一致时执行失败，禁止静默覆盖或忽略漂移。
+- `configuration_versions`、事件 Schema 和消息模板 Seed 默认 `DRAFT`，不得作为已发布配置直接读取。
 
 ## 本地执行示例
 
@@ -30,3 +32,4 @@ Get-ChildItem database/postgresql/migrations/*.sql | Sort-Object Name | ForEach-
 
 脚本使用 `\set ON_ERROR_STOP on`，任一语句失败即停止。角色脚本需要具备创建角色和授权的管理员权限。
 
+执行完全部 SQL 后运行 `verification/Generate-DatabaseDocs.ps1`，生成精确需求追踪、完整逻辑关系清单、孤儿检查 SQL 和数据字典。

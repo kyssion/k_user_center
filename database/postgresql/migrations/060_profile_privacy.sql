@@ -11,6 +11,7 @@ CREATE TABLE iam.user_profiles (
     avatar_uri text,
     locale varchar(35),
     timezone varchar(64),
+    primary_contact_identifier_id uuid,
     profile_version bigint NOT NULL DEFAULT 0,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -25,6 +26,7 @@ COMMENT ON COLUMN iam.user_profiles.display_name IS '可空；展示名称，属
 COMMENT ON COLUMN iam.user_profiles.avatar_uri IS '可空；受控头像对象引用，不接受任意主动内容。';
 COMMENT ON COLUMN iam.user_profiles.locale IS '可空；BCP 47 语言区域偏好。';
 COMMENT ON COLUMN iam.user_profiles.timezone IS '可空；IANA 时区名称。';
+COMMENT ON COLUMN iam.user_profiles.primary_contact_identifier_id IS '可空；逻辑引用 iam.identifiers.id；代码校验其属于当前用户、已验证且当前有效绑定。';
 COMMENT ON COLUMN iam.user_profiles.profile_version IS '资料语义版本，用于事件和缓存。';
 COMMENT ON COLUMN iam.user_profiles.created_at IS '数据库插入时间。';
 COMMENT ON COLUMN iam.user_profiles.updated_at IS '数据库更新时间；应用显式刷新。';
@@ -331,9 +333,11 @@ COMMENT ON COLUMN iam.deletion_proofs.completed_at IS '该系统处理完成时�
 COMMENT ON COLUMN iam.deletion_proofs.created_at IS '数据库插入时间。';
 
 CREATE INDEX ix_profile_documents_user ON iam.profile_documents (user_id, namespace);
+CREATE INDEX ix_user_profiles_primary_contact ON iam.user_profiles (primary_contact_identifier_id) WHERE primary_contact_identifier_id IS NOT NULL;
 CREATE INDEX ix_assurance_user ON iam.identity_assurance_assertions (user_id, state, expires_at);
 CREATE INDEX ix_consents_aggregate ON iam.consents (aggregate_id, version DESC);
 CREATE INDEX ix_privacy_requests_user ON iam.privacy_requests (user_id, state, submitted_at DESC);
 CREATE INDEX ix_privacy_requests_deadline ON iam.privacy_requests (state, deadline_at);
 CREATE INDEX ix_legal_holds_target ON iam.legal_holds (target_type, target_id, state);
 COMMENT ON INDEX iam.ix_privacy_requests_deadline IS '隐私处理器按状态和法定截止时间查询待办。';
+COMMENT ON INDEX iam.ix_user_profiles_primary_contact IS '从 Identifier 反查将其设为主联系方式的 Profile。';

@@ -8,8 +8,8 @@
 |---|---|
 | `database/postgresql/bootstrap` | 数据库角色和数据库级最小权限 |
 | `database/postgresql/migrations` | 113 张表、约束、索引、分区和运行时权限 |
-| `database/postgresql/seeds` | 经批准的稳定系统配置，不创建用户、租户、Client 或秘密 |
-| `database/postgresql/verification` | Schema、Comment、禁止对象、敏感字段、孤儿关系和权限门禁 |
+| `database/postgresql/seeds` | 稳定目录和 DRAFT 控制面候选版本，不创建用户、租户、Client 或秘密 |
+| `database/postgresql/verification` | Schema、Comment、禁止对象、敏感字段、全部可解析逻辑关系、Seed 和权限门禁 |
 | `.NET业务规则与状态机实现清单.md` | 后续 C# 聚合、命令、状态机、事务和测试实现索引 |
 | `逻辑关系与代码校验清单.md` | 无 Foreign Key 时的代码校验契约 |
 | `需求能力表测试追踪矩阵.md` | 能力地图/蓝图到存储、代码和证据的映射 |
@@ -37,13 +37,13 @@
 
 - PostgreSQL 15 及以上，使用 `UNIQUE NULLS NOT DISTINCT`。
 - UUID 由应用生成，推荐 UUIDv7。
-- Seed 使用 PostgreSQL 内置 `sha256(bytea)` 计算配置摘要，不依赖扩展。
+- Seed 使用 PostgreSQL 内置 `sha256(bytea)` 计算内容摘要，不依赖扩展；同键内容漂移直接失败，控制面对象默认 DRAFT。
 
 ## 发布门禁
 
 1. 空数据库按文件名顺序执行全部 Migration 和 Seed。
 2. 执行全部 Verification，任一异常阻断发布。
-3. 执行 .NET 状态机属性测试、逻辑引用负向测试、租户隔离测试和敏感日志扫描。
-4. 检查未来 12 个月以上分区、默认分区积压、孤儿关系、Outbox 积压和安全水位传播。
-5. 保存 Schema 快照、验证输出和迁移校验和作为发布证据。
-
+3. 执行生成脚本，确认 718 个精确编号、完整逻辑关系和数据库报告全部更新。
+4. 执行 .NET 状态机属性测试、逻辑引用负向测试、租户隔离测试和敏感日志扫描。
+5. 检查未来 12 个月以上分区、默认分区积压、孤儿关系、Outbox 积压和安全水位传播。
+6. 保存 Schema 快照、验证输出和迁移校验和作为发布证据。

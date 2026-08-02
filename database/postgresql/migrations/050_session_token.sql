@@ -49,6 +49,12 @@ CREATE TABLE iam.sessions (
     device_id uuid,
     authentication_context_id uuid NOT NULL,
     state varchar(40) NOT NULL,
+    security_profile_code varchar(40) NOT NULL,
+    security_profile_version integer NOT NULL,
+    policy_version_ids uuid[] NOT NULL DEFAULT ARRAY[]::uuid[],
+    consent_id uuid,
+    consent_epoch bigint,
+    revocation_watermark bigint,
     user_security_epoch bigint NOT NULL,
     client_security_epoch bigint NOT NULL,
     tenant_security_epoch bigint,
@@ -60,7 +66,8 @@ CREATE TABLE iam.sessions (
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT uq_sessions_public UNIQUE (session_id),
-    CONSTRAINT ck_sessions_epochs CHECK (user_security_epoch >= 0 AND client_security_epoch >= 0 AND (tenant_security_epoch IS NULL OR tenant_security_epoch >= 0)),
+    CONSTRAINT ck_sessions_profile_version CHECK (security_profile_version > 0),
+    CONSTRAINT ck_sessions_epochs CHECK (user_security_epoch >= 0 AND client_security_epoch >= 0 AND (tenant_security_epoch IS NULL OR tenant_security_epoch >= 0) AND (consent_epoch IS NULL OR consent_epoch >= 0) AND (revocation_watermark IS NULL OR revocation_watermark >= 0)),
     CONSTRAINT ck_sessions_expiry CHECK (absolute_expires_at > created_at AND idle_expires_at > created_at),
     CONSTRAINT ck_sessions_version CHECK (row_version >= 0)
 );
@@ -73,6 +80,12 @@ COMMENT ON COLUMN iam.sessions.tenant_id IS '可空；逻辑引用 iam.tenants.i
 COMMENT ON COLUMN iam.sessions.device_id IS '可空；逻辑引用 iam.devices.id。';
 COMMENT ON COLUMN iam.sessions.authentication_context_id IS '逻辑引用 iam.authentication_contexts.id。';
 COMMENT ON COLUMN iam.sessions.state IS '会话状态；由 SESSION 状态机维护。';
+COMMENT ON COLUMN iam.sessions.security_profile_code IS '创建会话时适用的 Security Profile 稳定代码。';
+COMMENT ON COLUMN iam.sessions.security_profile_version IS '创建会话时适用的 Security Profile 正整数版本。';
+COMMENT ON COLUMN iam.sessions.policy_version_ids IS '创建会话时适用的 iam.policy_versions.id 逻辑引用数组。';
+COMMENT ON COLUMN iam.sessions.consent_id IS '可空；以 Consent 为处理依据时逻辑引用 iam.consents.id。';
+COMMENT ON COLUMN iam.sessions.consent_epoch IS '可空；以 Consent 为依据时的聚合安全水位快照。';
+COMMENT ON COLUMN iam.sessions.revocation_watermark IS '可空；创建会话时适用的撤销水位快照。';
 COMMENT ON COLUMN iam.sessions.user_security_epoch IS '签发时用户安全水位快照。';
 COMMENT ON COLUMN iam.sessions.client_security_epoch IS '签发时 Client 安全水位快照。';
 COMMENT ON COLUMN iam.sessions.tenant_security_epoch IS '可空；签发时租户安全水位快照。';
@@ -250,10 +263,24 @@ CREATE TABLE iam.access_token_records (
     jti varchar(160) NOT NULL,
     token_hash varchar(256),
     user_id uuid,
+    subject_type varchar(40) NOT NULL,
     subject_id varchar(128) NOT NULL,
+    actor_type varchar(40),
+    actor_id uuid,
+    delegation_id uuid,
+    delegation_chain_snapshot jsonb NOT NULL DEFAULT '[]'::jsonb,
     client_id uuid NOT NULL,
     audience text[] NOT NULL,
     scope_snapshot text[] NOT NULL,
+    security_profile_code varchar(40) NOT NULL,
+    security_profile_version integer NOT NULL,
+    policy_version_ids uuid[] NOT NULL DEFAULT ARRAY[]::uuid[],
+    consent_id uuid,
+    consent_epoch bigint,
+    revocation_watermark bigint,
+    sender_constraint_type varchar(40),
+    sender_constraint_thumbprint varchar(256),
+    authorization_decision_id uuid,
     grant_id uuid,
     session_id uuid,
     user_security_epoch bigint,
@@ -263,7 +290,8 @@ CREATE TABLE iam.access_token_records (
     expires_at timestamptz NOT NULL,
     revoked_at timestamptz,
     CONSTRAINT pk_access_token_records PRIMARY KEY (id, issued_at),
-    CONSTRAINT ck_access_token_epochs CHECK ((user_security_epoch IS NULL OR user_security_epoch >= 0) AND client_security_epoch >= 0 AND (tenant_security_epoch IS NULL OR tenant_security_epoch >= 0)),
+    CONSTRAINT ck_access_token_profile_version CHECK (security_profile_version > 0),
+    CONSTRAINT ck_access_token_epochs CHECK ((user_security_epoch IS NULL OR user_security_epoch >= 0) AND client_security_epoch >= 0 AND (tenant_security_epoch IS NULL OR tenant_security_epoch >= 0) AND (consent_epoch IS NULL OR consent_epoch >= 0) AND (revocation_watermark IS NULL OR revocation_watermark >= 0)),
     CONSTRAINT ck_access_token_expiry CHECK (expires_at > issued_at)
 ) PARTITION BY RANGE (issued_at);
 COMMENT ON TABLE iam.access_token_records IS 'Access Token 元数据和撤销定位信息；按 issued_at 月度分区，不保存完整 Token。';
@@ -271,10 +299,24 @@ COMMENT ON COLUMN iam.access_token_records.id IS '应用生成的记录 UUIDv7�
 COMMENT ON COLUMN iam.access_token_records.jti IS 'Token JTI；跨分区唯一性由签发代码和高熵生成保证。';
 COMMENT ON COLUMN iam.access_token_records.token_hash IS '可空；Opaque Token 或审计用途的不可逆摘要。';
 COMMENT ON COLUMN iam.access_token_records.user_id IS '可空；自然人 Token 逻辑引用 iam.global_users.id。';
+COMMENT ON COLUMN iam.access_token_records.subject_type IS 'Token Subject 类型，例如 USER、MACHINE 或 EXTERNAL_SUBJECT。';
 COMMENT ON COLUMN iam.access_token_records.subject_id IS 'Token 中 Subject 快照。';
+COMMENT ON COLUMN iam.access_token_records.actor_type IS '可空；代理或 Token Exchange 场景中的 Actor 类型。';
+COMMENT ON COLUMN iam.access_token_records.actor_id IS '可空；按 actor_type 逻辑引用自然人、机器主体或 Client。';
+COMMENT ON COLUMN iam.access_token_records.delegation_id IS '可空；逻辑引用 iam.delegations.id。';
+COMMENT ON COLUMN iam.access_token_records.delegation_chain_snapshot IS '委托链稳定引用和深度快照；代码校验链路范围且禁止扩权。';
 COMMENT ON COLUMN iam.access_token_records.client_id IS '逻辑引用 iam.oauth_clients.id。';
 COMMENT ON COLUMN iam.access_token_records.audience IS 'Token Audience 快照。';
 COMMENT ON COLUMN iam.access_token_records.scope_snapshot IS 'Token Scope 快照。';
+COMMENT ON COLUMN iam.access_token_records.security_profile_code IS 'Token 签发时适用的 Security Profile 稳定代码。';
+COMMENT ON COLUMN iam.access_token_records.security_profile_version IS 'Token 签发时适用的 Security Profile 正整数版本。';
+COMMENT ON COLUMN iam.access_token_records.policy_version_ids IS '签发决策使用的 iam.policy_versions.id 逻辑引用数组。';
+COMMENT ON COLUMN iam.access_token_records.consent_id IS '可空；以 Consent 为处理依据时逻辑引用 iam.consents.id。';
+COMMENT ON COLUMN iam.access_token_records.consent_epoch IS '可空；签发时适用的 Consent 安全水位。';
+COMMENT ON COLUMN iam.access_token_records.revocation_watermark IS '可空；签发时适用的撤销水位。';
+COMMENT ON COLUMN iam.access_token_records.sender_constraint_type IS '可空；发送方约束类型，例如 DPOP_JKT 或 MTLS_X5T_S256。';
+COMMENT ON COLUMN iam.access_token_records.sender_constraint_thumbprint IS '可空；DPoP 公钥或 mTLS 证书确认值的摘要，不保存私钥或证书秘密。';
+COMMENT ON COLUMN iam.access_token_records.authorization_decision_id IS '可空；逻辑引用 iam.authorization_decisions.decision_id，记录签发依据的 PDP 全局决策。';
 COMMENT ON COLUMN iam.access_token_records.grant_id IS '可空；逻辑引用 iam.authorization_grants.id。';
 COMMENT ON COLUMN iam.access_token_records.session_id IS '可空；逻辑引用 iam.sessions.id。';
 COMMENT ON COLUMN iam.access_token_records.user_security_epoch IS '可空；签发时用户安全水位。';

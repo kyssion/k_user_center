@@ -6,6 +6,7 @@ DECLARE
     triggers text;
     routines text;
     enums text;
+    views text;
 BEGIN
     SELECT string_agg(con.conname, ', ' ORDER BY con.conname)
       INTO foreign_keys
@@ -33,12 +34,18 @@ BEGIN
       JOIN pg_namespace n ON n.oid = t.typnamespace
      WHERE n.nspname = 'iam' AND t.typtype = 'e';
 
-    IF foreign_keys IS NOT NULL OR triggers IS NOT NULL OR routines IS NOT NULL OR enums IS NOT NULL THEN
-        RAISE EXCEPTION '禁止对象门禁失败：fk=%, trigger=%, routine=%, enum=%',
-            coalesce(foreign_keys, '<none>'), coalesce(triggers, '<none>'), coalesce(routines, '<none>'), coalesce(enums, '<none>');
+    SELECT string_agg(c.relname, ', ' ORDER BY c.relname)
+      INTO views
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'iam' AND c.relkind IN ('v','m');
+
+    IF foreign_keys IS NOT NULL OR triggers IS NOT NULL OR routines IS NOT NULL OR enums IS NOT NULL OR views IS NOT NULL THEN
+        RAISE EXCEPTION '禁止对象门禁失败：fk=%, trigger=%, routine=%, enum=%, view=%',
+            coalesce(foreign_keys, '<none>'), coalesce(triggers, '<none>'), coalesce(routines, '<none>'),
+            coalesce(enums, '<none>'), coalesce(views, '<none>');
     END IF;
 END
 $forbidden_objects$;
 
-SELECT 'PASS: 不存在 FK、业务 Trigger、持久化 Routine 或 Enum' AS result;
-
+SELECT 'PASS: 不存在 FK、业务 Trigger、持久化 Routine、Enum、View 或 Materialized View' AS result;

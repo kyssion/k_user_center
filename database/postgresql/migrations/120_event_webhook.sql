@@ -11,6 +11,7 @@ CREATE TABLE iam.event_schema_versions (
     compatibility_mode varchar(40) NOT NULL,
     json_schema jsonb NOT NULL,
     schema_digest char(64) NOT NULL,
+    approval_case_id uuid,
     state varchar(40) NOT NULL,
     published_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -24,6 +25,7 @@ COMMENT ON COLUMN iam.event_schema_versions.schema_version IS '事件类型内�
 COMMENT ON COLUMN iam.event_schema_versions.compatibility_mode IS '兼容性模式声明；具体检查由代码执行。';
 COMMENT ON COLUMN iam.event_schema_versions.json_schema IS '事件 JSON Schema 文档。';
 COMMENT ON COLUMN iam.event_schema_versions.schema_digest IS '规范化 Schema SHA-256 摘要。';
+COMMENT ON COLUMN iam.event_schema_versions.approval_case_id IS '可空；发布审批逻辑引用 iam.approval_cases.id。';
 COMMENT ON COLUMN iam.event_schema_versions.state IS 'Schema 版本状态。';
 COMMENT ON COLUMN iam.event_schema_versions.published_at IS '可空；发布时间。';
 COMMENT ON COLUMN iam.event_schema_versions.created_at IS '数据库插入时间。';

@@ -7,10 +7,14 @@ SET ROLE iam_owner;
 CREATE TABLE iam.global_users (
     id uuid PRIMARY KEY,
     global_user_id varchar(64) NOT NULL,
+    user_type varchar(40) NOT NULL,
     lifecycle_state varchar(40) NOT NULL,
     lifecycle_reason varchar(100),
+    authentication_lock_state varchar(40) NOT NULL,
     authentication_locked_until timestamptz,
+    security_freeze_state varchar(40) NOT NULL,
     security_frozen_at timestamptz,
+    guest_expires_at timestamptz,
     user_security_epoch bigint NOT NULL DEFAULT 0,
     state_changed_at timestamptz NOT NULL,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -23,10 +27,14 @@ CREATE TABLE iam.global_users (
 COMMENT ON TABLE iam.global_users IS '全局用户主体；只保存身份生命周期和安全水位，不保存业务会员状态。';
 COMMENT ON COLUMN iam.global_users.id IS '应用生成的 UUIDv7 内部主键。';
 COMMENT ON COLUMN iam.global_users.global_user_id IS '对内跨系统稳定且不可推断的用户标识，可受控对外暴露。';
+COMMENT ON COLUMN iam.global_users.user_type IS '用户主体类型，例如 REGISTERED 或 GUEST；合法值和升级规则由 ID 代码维护。';
 COMMENT ON COLUMN iam.global_users.lifecycle_state IS '用户生命周期状态；转换由 ID 领域状态机负责。';
 COMMENT ON COLUMN iam.global_users.lifecycle_reason IS '可空；最近状态变化原因码。';
+COMMENT ON COLUMN iam.global_users.authentication_lock_state IS '独立认证锁定维度；ENABLED 与 LOCKED 转换由 AUTH/RISK 代码维护。';
 COMMENT ON COLUMN iam.global_users.authentication_locked_until IS '可空；认证临时锁定截止时间，风险策略决定其值。';
+COMMENT ON COLUMN iam.global_users.security_freeze_state IS '独立全局安全冻结维度；CLEAR 与 FROZEN 转换由 ID/RISK 代码维护。';
 COMMENT ON COLUMN iam.global_users.security_frozen_at IS '可空；安全冻结开始时间。';
+COMMENT ON COLUMN iam.global_users.guest_expires_at IS '可空；Guest 身份到期业务时间；到期、续期和升级由 ID 代码处理。';
 COMMENT ON COLUMN iam.global_users.user_security_epoch IS '用户安全水位；撤销和敏感变更时由代码原子递增。';
 COMMENT ON COLUMN iam.global_users.state_changed_at IS '生命周期状态最近变化业务时间。';
 COMMENT ON COLUMN iam.global_users.created_at IS '数据库插入时间。';
@@ -214,7 +222,9 @@ COMMENT ON COLUMN iam.user_aliases.expires_at IS '可空；映射失效时间。
 COMMENT ON COLUMN iam.user_aliases.created_at IS '数据库插入时间。';
 
 CREATE INDEX ix_identifier_lookup ON iam.identifiers (scope_type, scope_id, identifier_type, blind_index);
+CREATE INDEX ix_global_users_guest_expiry ON iam.global_users (user_type, guest_expires_at) WHERE guest_expires_at IS NOT NULL;
 CREATE INDEX ix_identifier_bindings_user ON iam.identifier_bindings (user_id, binding_state, bound_at DESC);
 CREATE INDEX ix_user_identities_user ON iam.user_identities (user_id, state, identity_type);
 CREATE INDEX ix_user_aliases_canonical ON iam.user_aliases (canonical_user_id, state);
 COMMENT ON INDEX iam.ix_identifier_lookup IS '按作用域、类型和盲索引定位标识；不暴露原始值。';
+COMMENT ON INDEX iam.ix_global_users_guest_expiry IS '扫描待过期 Guest 身份；是否到期和如何处置由代码判断。';

@@ -25,6 +25,13 @@ CREATE INDEX ix_webhook_signing_keys_subscription ON iam.webhook_signing_keys (s
 CREATE INDEX ix_consumer_checkpoints_watermark ON iam.consumer_checkpoints (consumer_id, security_watermark);
 CREATE INDEX ix_contact_reachability_state ON iam.contact_reachability (channel, reachability_state, updated_at);
 CREATE INDEX ix_migration_items_platform ON iam.migration_items (platform_object_type, platform_object_id, state);
+CREATE INDEX ix_operations_capability ON iam.operations (capability_code, state, created_at DESC);
+CREATE INDEX ix_sessions_consent ON iam.sessions (consent_id, consent_epoch) WHERE consent_id IS NOT NULL;
+CREATE INDEX ix_access_tokens_actor ON iam.access_token_records (actor_type, actor_id, issued_at DESC) WHERE actor_id IS NOT NULL;
+CREATE INDEX ix_access_tokens_delegation ON iam.access_token_records (delegation_id, issued_at DESC) WHERE delegation_id IS NOT NULL;
+CREATE INDEX ix_access_tokens_consent ON iam.access_token_records (consent_id, consent_epoch, issued_at DESC) WHERE consent_id IS NOT NULL;
+CREATE INDEX ix_access_tokens_decision ON iam.access_token_records (authorization_decision_id, issued_at DESC) WHERE authorization_decision_id IS NOT NULL;
+CREATE INDEX ix_authorization_decisions_validity ON iam.authorization_decisions (valid_until, decided_at DESC);
 
 COMMENT ON INDEX iam.ix_user_subjects_user IS '从用户和 Client 定位 Subject 映射。';
 COMMENT ON INDEX iam.ix_identifier_claims_owner IS '从用户定位当前标识占用。';
@@ -48,6 +55,13 @@ COMMENT ON INDEX iam.ix_webhook_signing_keys_subscription IS '投递时定位订
 COMMENT ON INDEX iam.ix_consumer_checkpoints_watermark IS '查询消费者安全水位传播进度。';
 COMMENT ON INDEX iam.ix_contact_reachability_state IS '按渠道和可达性状态运营联系方式。';
 COMMENT ON INDEX iam.ix_migration_items_platform IS '从平台对象追溯迁移项。';
+COMMENT ON INDEX iam.ix_operations_capability IS '按能力编号和状态查询异步 Operation。';
+COMMENT ON INDEX iam.ix_sessions_consent IS '按 Consent 水位定位受影响会话。';
+COMMENT ON INDEX iam.ix_access_tokens_actor IS '按 Actor 调查代理或 Token Exchange 签发记录。';
+COMMENT ON INDEX iam.ix_access_tokens_delegation IS '委托撤销时定位关联 Token 元数据。';
+COMMENT ON INDEX iam.ix_access_tokens_consent IS 'Consent 撤回或水位变化时定位关联 Token 元数据。';
+COMMENT ON INDEX iam.ix_access_tokens_decision IS '从 PDP 决策追踪 Token 签发记录。';
+COMMENT ON INDEX iam.ix_authorization_decisions_validity IS '定位即将过期或已过期的 PDP 决策证据。';
 
 -- BRIN 适合追加型时间分区内扫描；B-Tree 业务路径索引已在各领域 Migration 定义。
 CREATE INDEX ix_audit_events_recorded_brin ON iam.audit_events USING brin (recorded_at);
@@ -61,6 +75,8 @@ CREATE INDEX ix_webhook_attempts_created_brin ON iam.webhook_delivery_attempts U
 CREATE INDEX ix_message_requests_created_brin ON iam.message_requests USING brin (created_at);
 CREATE INDEX ix_message_attempts_created_brin ON iam.message_delivery_attempts USING brin (created_at);
 CREATE INDEX ix_migration_change_recorded_brin ON iam.migration_change_logs USING brin (recorded_at);
+CREATE INDEX ix_outbox_recorded_brin ON iam.outbox_events USING brin (recorded_at);
+CREATE INDEX ix_inbox_received_brin ON iam.inbox_messages USING brin (received_at);
 
 COMMENT ON INDEX iam.ix_audit_events_recorded_brin IS '审计事件按记录时间执行大范围顺序扫描。';
 COMMENT ON INDEX iam.ix_authentication_attempts_occurred_brin IS '认证尝试按发生时间执行大范围顺序扫描。';
@@ -73,4 +89,5 @@ COMMENT ON INDEX iam.ix_webhook_attempts_created_brin IS 'Webhook 尝试按创�
 COMMENT ON INDEX iam.ix_message_requests_created_brin IS '消息请求按创建时间执行归档扫描。';
 COMMENT ON INDEX iam.ix_message_attempts_created_brin IS '消息尝试按创建时间执行归档扫描。';
 COMMENT ON INDEX iam.ix_migration_change_recorded_brin IS '迁移变更按记录时间执行回放扫描。';
-
+COMMENT ON INDEX iam.ix_outbox_recorded_brin IS 'Outbox Hash 分区内按记录时间执行归档和保留期扫描。';
+COMMENT ON INDEX iam.ix_inbox_received_brin IS 'Inbox Hash 分区内按接收时间执行归档和保留期扫描。';

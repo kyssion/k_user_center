@@ -186,10 +186,12 @@ CREATE TABLE iam.approval_cases (
     required_approvals integer NOT NULL,
     state varchar(40) NOT NULL,
     expires_at timestamptz NOT NULL,
+    execution_id uuid,
     executed_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     row_version bigint NOT NULL DEFAULT 0,
+    CONSTRAINT uq_approval_cases_execution_id UNIQUE (execution_id),
     CONSTRAINT ck_approval_required CHECK (required_approvals > 0),
     CONSTRAINT ck_approval_expiry CHECK (expires_at > created_at),
     CONSTRAINT ck_approval_version CHECK (row_version >= 0)
@@ -207,10 +209,12 @@ COMMENT ON COLUMN iam.approval_cases.resource_version IS '可空；发起时目�
 COMMENT ON COLUMN iam.approval_cases.required_approvals IS '策略快照要求的最少批准数。';
 COMMENT ON COLUMN iam.approval_cases.state IS '审批单状态。';
 COMMENT ON COLUMN iam.approval_cases.expires_at IS '审批请求过期时间。';
+COMMENT ON COLUMN iam.approval_cases.execution_id IS '可空；批准动作执行时生成的全局唯一执行 UUID，用于并发防重和执行绑定。';
 COMMENT ON COLUMN iam.approval_cases.executed_at IS '可空；批准动作实际执行时间。';
 COMMENT ON COLUMN iam.approval_cases.created_at IS '数据库插入时间。';
 COMMENT ON COLUMN iam.approval_cases.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.approval_cases.row_version IS '乐观锁版本。';
+COMMENT ON CONSTRAINT uq_approval_cases_execution_id ON iam.approval_cases IS '数据库保证一个执行标识最多绑定一个审批单；执行资格和状态由代码校验。';
 
 CREATE TABLE iam.approval_actions (
     id uuid PRIMARY KEY,

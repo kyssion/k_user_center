@@ -40,6 +40,12 @@ CREATE TABLE iam.operations (
     id uuid PRIMARY KEY,
     operation_type varchar(80) NOT NULL,
     state varchar(40) NOT NULL,
+    caller_scope varchar(200) NOT NULL,
+    idempotency_key varchar(200) NOT NULL,
+    request_digest char(64) NOT NULL,
+    capability_code varchar(80) NOT NULL,
+    saga_type varchar(80) NOT NULL,
+    policy_version_ids uuid[] NOT NULL DEFAULT ARRAY[]::uuid[],
     actor_type varchar(40),
     actor_id uuid,
     subject_type varchar(40),
@@ -55,6 +61,7 @@ CREATE TABLE iam.operations (
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     completed_at timestamptz,
     row_version bigint NOT NULL DEFAULT 0,
+    CONSTRAINT uq_operations_caller_key UNIQUE (caller_scope, idempotency_key),
     CONSTRAINT ck_operations_version CHECK (row_version >= 0),
     CONSTRAINT ck_operations_expiry CHECK (expires_at IS NULL OR expires_at > created_at)
 );
@@ -62,6 +69,12 @@ COMMENT ON TABLE iam.operations IS '跨域或异步操作的持久化载体；�
 COMMENT ON COLUMN iam.operations.id IS '应用生成的 Operation UUIDv7，可作为 API 查询标识。';
 COMMENT ON COLUMN iam.operations.operation_type IS '操作类型代码；代码注册表维护定义，不使用数据库状态字典。';
 COMMENT ON COLUMN iam.operations.state IS '操作状态；合法转换由 OPS 状态机维护。';
+COMMENT ON COLUMN iam.operations.caller_scope IS '原始调用方稳定作用域快照；与幂等键共同限定 Operation。';
+COMMENT ON COLUMN iam.operations.idempotency_key IS '原始幂等键快照；不得包含敏感数据。';
+COMMENT ON COLUMN iam.operations.request_digest IS '规范化原始请求的 SHA-256 十六进制摘要。';
+COMMENT ON COLUMN iam.operations.capability_code IS '创建 Operation 的能力编号或稳定能力代码，例如 CAP-API-018。';
+COMMENT ON COLUMN iam.operations.saga_type IS 'Saga 或长事务编排类型；步骤和补偿规则由代码注册表解释。';
+COMMENT ON COLUMN iam.operations.policy_version_ids IS 'Operation 创建时适用的 iam.policy_versions.id 逻辑引用数组。';
 COMMENT ON COLUMN iam.operations.actor_type IS '可空；发起者类型，例如 USER、MACHINE、ADMIN。';
 COMMENT ON COLUMN iam.operations.actor_id IS '可空；按 actor_type 逻辑引用主体表，数据库不创建外键。';
 COMMENT ON COLUMN iam.operations.subject_type IS '可空；被操作主体类型。';
@@ -77,6 +90,7 @@ COMMENT ON COLUMN iam.operations.created_at IS '数据库插入时间。';
 COMMENT ON COLUMN iam.operations.updated_at IS '数据库更新时间；应用更新时显式刷新。';
 COMMENT ON COLUMN iam.operations.completed_at IS '可空；操作进入终态的业务时间。';
 COMMENT ON COLUMN iam.operations.row_version IS '乐观锁版本。';
+COMMENT ON CONSTRAINT uq_operations_caller_key ON iam.operations IS '保证同一调用作用域和幂等键只绑定一个 Operation。';
 
 CREATE TABLE iam.operation_steps (
     id uuid PRIMARY KEY,
@@ -124,6 +138,20 @@ CREATE TABLE iam.outbox_events (
     aggregate_id uuid NOT NULL,
     aggregate_version bigint,
     tenant_id uuid,
+    business_line_id uuid,
+    producer_type varchar(40) NOT NULL,
+    producer_id uuid NOT NULL,
+    subject_ref_type varchar(40) NOT NULL,
+    subject_ref_id varchar(160) NOT NULL,
+    actor_type varchar(40),
+    actor_id_type varchar(40),
+    actor_id varchar(160),
+    occurred_at timestamptz NOT NULL,
+    data_version bigint,
+    trace_id varchar(128) NOT NULL,
+    correlation_id varchar(128),
+    causation_id varchar(128),
+    data_classification varchar(40) NOT NULL,
     payload jsonb NOT NULL,
     headers jsonb NOT NULL DEFAULT '{}'::jsonb,
     publish_state varchar(40) NOT NULL,
@@ -134,6 +162,7 @@ CREATE TABLE iam.outbox_events (
     CONSTRAINT pk_outbox_events PRIMARY KEY (id, event_id),
     CONSTRAINT uq_outbox_event_id UNIQUE (event_id),
     CONSTRAINT ck_outbox_schema_version CHECK (schema_version > 0),
+    CONSTRAINT ck_outbox_data_version CHECK (data_version IS NULL OR data_version >= 0),
     CONSTRAINT ck_outbox_attempt CHECK (attempt_count >= 0)
 ) PARTITION BY HASH (event_id);
 COMMENT ON TABLE iam.outbox_events IS '与领域变更同事务写入的事件 Outbox；按 event_id Hash 分区以同时维持全局事件唯一性。发布和重试由 EVENT 代码处理。';
@@ -145,8 +174,22 @@ COMMENT ON COLUMN iam.outbox_events.aggregate_type IS '事件聚合类型。';
 COMMENT ON COLUMN iam.outbox_events.aggregate_id IS '聚合逻辑 ID；目标表由 aggregate_type 决定，数据库不创建外键。';
 COMMENT ON COLUMN iam.outbox_events.aggregate_version IS '可空；领域聚合提交后的版本。';
 COMMENT ON COLUMN iam.outbox_events.tenant_id IS '可空；逻辑引用 iam.tenants.id，平台级事件为空。';
+COMMENT ON COLUMN iam.outbox_events.business_line_id IS '可空；逻辑引用 iam.business_lines.id，用于业务线隔离和路由。';
+COMMENT ON COLUMN iam.outbox_events.producer_type IS '事件生产者主体类型，例如 MACHINE、SERVICE 或 SYSTEM。';
+COMMENT ON COLUMN iam.outbox_events.producer_id IS '按 producer_type 逻辑引用机器主体、Client 或系统主体；由代码解析和鉴权。';
+COMMENT ON COLUMN iam.outbox_events.subject_ref_type IS '事件主体引用的显式标识类型，例如 GLOBAL_USER_ID、PAIRWISE_SUBJECT 或 RESOURCE_ID。';
+COMMENT ON COLUMN iam.outbox_events.subject_ref_id IS '事件主体稳定引用；对外投递前由代码按接收方改写。';
+COMMENT ON COLUMN iam.outbox_events.actor_type IS '可空；触发事件的 Actor 类型。';
+COMMENT ON COLUMN iam.outbox_events.actor_id_type IS '可空；Actor 标识类型；actor_id 非空时由代码保证同时存在。';
+COMMENT ON COLUMN iam.outbox_events.actor_id IS '可空；按 actor_type 与 actor_id_type 逻辑引用自然人、机器主体或 Client；对外事件由代码执行 pairwise 改写或移除。';
+COMMENT ON COLUMN iam.outbox_events.occurred_at IS '领域事实实际发生时间，由生产者代码传入。';
+COMMENT ON COLUMN iam.outbox_events.data_version IS '可空；事件主体数据版本，用于消费者拒绝旧版本覆盖新版本。';
+COMMENT ON COLUMN iam.outbox_events.trace_id IS '端到端追踪 ID。';
+COMMENT ON COLUMN iam.outbox_events.correlation_id IS '可空；关联同一业务流程的相关 ID。';
+COMMENT ON COLUMN iam.outbox_events.causation_id IS '可空；直接导致本事件的命令或事件 ID。';
+COMMENT ON COLUMN iam.outbox_events.data_classification IS '事件载荷敏感级别；订阅、脱敏和加密由代码执行。';
 COMMENT ON COLUMN iam.outbox_events.payload IS '事件载荷；代码按事件 Schema 生成并禁止敏感明文。';
-COMMENT ON COLUMN iam.outbox_events.headers IS '追踪、因果和路由头；不得包含凭证。';
+COMMENT ON COLUMN iam.outbox_events.headers IS '扩展路由头；核心事件信封字段使用独立列，不得在此隐藏或覆盖。';
 COMMENT ON COLUMN iam.outbox_events.publish_state IS '发布状态；状态机由事件发布器维护。';
 COMMENT ON COLUMN iam.outbox_events.attempt_count IS '发布尝试次数，非负。';
 COMMENT ON COLUMN iam.outbox_events.next_attempt_at IS '可空；代码计算的下次重试时间。';

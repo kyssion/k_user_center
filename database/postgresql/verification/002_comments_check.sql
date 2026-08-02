@@ -11,7 +11,6 @@ BEGIN
       JOIN pg_namespace n ON n.oid = c.relnamespace
      WHERE n.nspname = 'iam'
        AND c.relkind IN ('r','p')
-       AND NOT c.relispartition
        AND obj_description(c.oid, 'pg_class') IS NULL;
 
     SELECT string_agg(format('%I.%I', c.relname, a.attname), ', ' ORDER BY c.relname, a.attnum)
@@ -32,5 +31,4 @@ BEGIN
 END
 $comments_check$;
 
-SELECT 'PASS: 所有目标表和字段均有 Comment' AS result;
-
+SELECT 'PASS: 所有父表、分区表和父表字段均有 Comment' AS result;

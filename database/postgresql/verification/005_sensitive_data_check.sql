@@ -4,6 +4,8 @@ DO $sensitive_contract$
 DECLARE
     banned_columns text;
     missing_expected text;
+    risky_json_payloads text;
+    invalid_template_schemas text;
 BEGIN
     SELECT string_agg(format('%I.%I', c.relname, a.attname), ', ' ORDER BY c.relname, a.attname)
       INTO banned_columns
@@ -23,6 +25,7 @@ BEGIN
         ('identifiers','value_ciphertext'),('identifiers','blind_index'),
         ('credential_materials','secret_hash'),('credential_materials','secret_ciphertext'),
         ('authorization_codes','code_hash'),('refresh_token_instances','token_hash'),
+        ('access_token_records','sender_constraint_thumbprint'),
         ('machine_credentials','secret_hash'),('cryptographic_keys','key_ref'),
         ('webhook_subscriptions','endpoint_ciphertext'),('message_requests','target_ciphertext')
       ) AS required(table_name, column_name)
@@ -34,11 +37,33 @@ BEGIN
             AND c.column_name = required.column_name
      );
 
-    IF banned_columns IS NOT NULL OR missing_expected IS NOT NULL THEN
-        RAISE EXCEPTION '敏感数据门禁失败：banned=%, missing_secure_shape=%', coalesce(banned_columns, '<none>'), coalesce(missing_expected, '<none>');
+    SELECT string_agg(format('%s/%s/v%s', config_type, config_code, version), ', ' ORDER BY config_type, config_code, version)
+      INTO risky_json_payloads
+      FROM iam.configuration_versions
+     WHERE payload::text ~* '"(plain_password|verification_code|private_key_value|client_secret_value|totp_secret)"\s*:';
+
+    SELECT string_agg(format('%s/%s/%s/v%s', template_code, channel, locale, version), ', ' ORDER BY template_code, channel, locale, version)
+      INTO invalid_template_schemas
+      FROM iam.message_template_versions t
+     WHERE jsonb_typeof(t.variable_schema) <> 'object'
+        OR coalesce(t.variable_schema->>'type', '') <> 'object'
+        OR jsonb_typeof(coalesce(t.variable_schema->'properties', '{}'::jsonb)) <> 'object'
+        OR jsonb_typeof(coalesce(t.variable_schema->'required', '[]'::jsonb)) <> 'array'
+        OR t.variable_schema->'additionalProperties' IS DISTINCT FROM 'false'::jsonb
+        OR EXISTS (
+            SELECT 1
+              FROM jsonb_array_elements_text(
+                    CASE WHEN jsonb_typeof(t.variable_schema->'required') = 'array' THEN t.variable_schema->'required' ELSE '[]'::jsonb END
+              ) AS required(property_name)
+             WHERE NOT coalesce(t.variable_schema->'properties', '{}'::jsonb) ? required.property_name
+        );
+
+    IF banned_columns IS NOT NULL OR missing_expected IS NOT NULL OR risky_json_payloads IS NOT NULL OR invalid_template_schemas IS NOT NULL THEN
+        RAISE EXCEPTION '敏感数据门禁失败：banned=%, missing_secure_shape=%, risky_json=%, invalid_template_schema=%',
+            coalesce(banned_columns, '<none>'), coalesce(missing_expected, '<none>'),
+            coalesce(risky_json_payloads, '<none>'), coalesce(invalid_template_schemas, '<none>');
     END IF;
 END
 $sensitive_contract$;
 
-SELECT 'PASS: 未发现敏感原文列名且关键密文/摘要字段存在' AS result;
-
+SELECT 'PASS: 未发现敏感原文列名或危险 JSON Key，关键密文/摘要字段及模板 Schema 有效' AS result;

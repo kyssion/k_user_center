@@ -271,6 +271,10 @@ CREATE TABLE iam.authorization_decisions (
     decision_id uuid NOT NULL,
     subject_type varchar(40) NOT NULL,
     subject_id uuid NOT NULL,
+    actor_type varchar(40),
+    actor_id uuid,
+    delegation_id uuid,
+    delegation_chain_snapshot jsonb NOT NULL DEFAULT '[]'::jsonb,
     action varchar(160) NOT NULL,
     resource_type varchar(100) NOT NULL,
     resource_id varchar(256) NOT NULL,
@@ -279,18 +283,31 @@ CREATE TABLE iam.authorization_decisions (
     decision varchar(20) NOT NULL,
     reason_codes text[] NOT NULL DEFAULT ARRAY[]::text[],
     obligations jsonb NOT NULL DEFAULT '[]'::jsonb,
+    security_profile_code varchar(40) NOT NULL,
+    security_profile_version integer NOT NULL,
     policy_version_ids uuid[] NOT NULL DEFAULT ARRAY[]::uuid[],
     policy_set_digest char(64) NOT NULL,
+    context_version_snapshot jsonb NOT NULL DEFAULT '{}'::jsonb,
+    consent_id uuid,
+    consent_epoch bigint,
     latency_ms integer,
     decided_at timestamptz NOT NULL,
+    valid_until timestamptz NOT NULL,
     CONSTRAINT pk_authorization_decisions PRIMARY KEY (id, decided_at),
-    CONSTRAINT ck_authorization_decision_latency CHECK (latency_ms IS NULL OR latency_ms >= 0)
+    CONSTRAINT ck_authorization_decision_profile_version CHECK (security_profile_version > 0),
+    CONSTRAINT ck_authorization_decision_consent_epoch CHECK (consent_epoch IS NULL OR consent_epoch >= 0),
+    CONSTRAINT ck_authorization_decision_latency CHECK (latency_ms IS NULL OR latency_ms >= 0),
+    CONSTRAINT ck_authorization_decision_validity CHECK (valid_until >= decided_at)
 ) PARTITION BY RANGE (decided_at);
 COMMENT ON TABLE iam.authorization_decisions IS 'PDP 授权决策证据；按 decided_at 月度分区，数据库不重算或解释允许、拒绝与 Obligation。';
 COMMENT ON COLUMN iam.authorization_decisions.id IS '应用生成的记录 UUIDv7。';
 COMMENT ON COLUMN iam.authorization_decisions.decision_id IS '对外追踪的全局决策 UUID；跨分区唯一性由 PDP 保证。';
 COMMENT ON COLUMN iam.authorization_decisions.subject_type IS '决策主体类型。';
 COMMENT ON COLUMN iam.authorization_decisions.subject_id IS '主体逻辑 ID。';
+COMMENT ON COLUMN iam.authorization_decisions.actor_type IS '可空；代理、管理或 Token Exchange 场景中的 Actor 类型。';
+COMMENT ON COLUMN iam.authorization_decisions.actor_id IS '可空；按 actor_type 逻辑引用自然人、机器主体或 Client。';
+COMMENT ON COLUMN iam.authorization_decisions.delegation_id IS '可空；逻辑引用 iam.delegations.id。';
+COMMENT ON COLUMN iam.authorization_decisions.delegation_chain_snapshot IS '参与决策的完整委托链快照；代码负责校验范围、深度、撤销和不扩权。';
 COMMENT ON COLUMN iam.authorization_decisions.action IS '请求动作。';
 COMMENT ON COLUMN iam.authorization_decisions.resource_type IS '资源类型。';
 COMMENT ON COLUMN iam.authorization_decisions.resource_id IS '资源稳定 ID 或规范化标识。';
@@ -299,10 +316,16 @@ COMMENT ON COLUMN iam.authorization_decisions.input_digest IS '规范化决策�
 COMMENT ON COLUMN iam.authorization_decisions.decision IS 'ALLOW 或 DENY 等决策结果；值域由 PDP 代码定义。';
 COMMENT ON COLUMN iam.authorization_decisions.reason_codes IS '稳定原因码列表。';
 COMMENT ON COLUMN iam.authorization_decisions.obligations IS 'PEP 必须执行的 Obligation 快照。';
+COMMENT ON COLUMN iam.authorization_decisions.security_profile_code IS '决策时适用的 Security Profile 稳定代码。';
+COMMENT ON COLUMN iam.authorization_decisions.security_profile_version IS '决策时适用的 Security Profile 正整数版本。';
 COMMENT ON COLUMN iam.authorization_decisions.policy_version_ids IS '参与决策的 iam.policy_versions.id 逻辑引用数组。';
 COMMENT ON COLUMN iam.authorization_decisions.policy_set_digest IS '实际策略集合摘要。';
+COMMENT ON COLUMN iam.authorization_decisions.context_version_snapshot IS '资源版本、PIP 属性版本和新鲜度、风险、保证等级及安全水位等缓存上下文快照。';
+COMMENT ON COLUMN iam.authorization_decisions.consent_id IS '可空；以 Consent 为依据时逻辑引用 iam.consents.id。';
+COMMENT ON COLUMN iam.authorization_decisions.consent_epoch IS '可空；决策时适用的 Consent 安全水位。';
 COMMENT ON COLUMN iam.authorization_decisions.latency_ms IS '可空；PDP 非负处理耗时毫秒数。';
 COMMENT ON COLUMN iam.authorization_decisions.decided_at IS '决策时间和月度分区键。';
+COMMENT ON COLUMN iam.authorization_decisions.valid_until IS '本决策和缓存结果最晚可复用时间；是否允许复用仍由 PDP/PEP 代码判断。';
 
 CREATE TABLE iam.relationship_tuples (
     id uuid PRIMARY KEY,
