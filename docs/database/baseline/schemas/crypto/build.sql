@@ -6,6 +6,15 @@
 
 \set ON_ERROR_STOP on
 
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM core.schema_migration WHERE version = 'baseline:core') THEN
+        RAISE EXCEPTION 'CORE_BASELINE_REQUIRED: 请先执行 baseline/schemas/core/build.sql'
+            USING ERRCODE = '55000';
+    END IF;
+END;
+$$;
+
 SELECT (NOT EXISTS (SELECT 1 FROM core.schema_migration WHERE version = 'baseline:crypto'))::text AS kuc_run_schema \gset
 \if :kuc_run_schema
 BEGIN;
@@ -18,4 +27,3 @@ SET LOCAL statement_timeout = '10min';
 SELECT core.fn_register_migration('baseline:crypto', 'crypto Schema 局部对象');
 COMMIT;
 \endif
-

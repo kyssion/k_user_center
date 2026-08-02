@@ -4,6 +4,27 @@
 -- PostgreSQL 16+；应用技术栈：.NET 10 + SqlSugar
 -- =============================================================================
 
+CREATE TABLE core.public_id_ledger (
+    public_id       text        NOT NULL,
+    entity_kind     text        NOT NULL,
+    entity_id       uuid        NOT NULL,
+    issued_at       timestamptz NOT NULL DEFAULT clock_timestamp(),
+    CONSTRAINT pk_public_id_ledger PRIMARY KEY (public_id),
+    CONSTRAINT uq_public_id_ledger_entity UNIQUE (entity_kind, entity_id),
+    CONSTRAINT ck_public_id_ledger_format CHECK (public_id ~ '^[a-z][a-z0-9]{1,11}_[A-Za-z0-9_-]{16,64}$')
+);
+
+COMMENT ON TABLE core.public_id_ledger IS 'INV-G-001：UID、Subject ID、Membership ID 及其他对外主体标识的永久占用台账；实体删除也不释放。';
+COMMENT ON COLUMN core.public_id_ledger.public_id IS '不可复用的公开稳定标识；实体删除后仍永久占用。';
+COMMENT ON COLUMN core.public_id_ledger.entity_kind IS '公开标识所属实体类别的稳定机器代码。';
+COMMENT ON COLUMN core.public_id_ledger.entity_id IS '实体内部 UUID；与 entity_kind 共同定位原始实体。';
+COMMENT ON COLUMN core.public_id_ledger.issued_at IS '数据库可信时钟记录的公开标识签发时间。';
+COMMENT ON CONSTRAINT pk_public_id_ledger ON core.public_id_ledger IS '主键约束：保证公开标识全平台唯一且不可复用。';
+COMMENT ON CONSTRAINT uq_public_id_ledger_entity ON core.public_id_ledger IS '唯一约束：同一实体只能登记一个公开稳定标识。';
+COMMENT ON CONSTRAINT ck_public_id_ledger_format ON core.public_id_ledger IS '检查约束：公开标识必须符合类型前缀与 URL-safe 随机主体格式。';
+COMMENT ON INDEX core.pk_public_id_ledger IS '约束 pk_public_id_ledger 的支撑唯一索引。';
+COMMENT ON INDEX core.uq_public_id_ledger_entity IS '约束 uq_public_id_ledger_entity 的支撑唯一索引。';
+
 CREATE TABLE core.security_profile (
     profile_code text        NOT NULL,
     profile_version integer     NOT NULL,
@@ -396,4 +417,3 @@ COMMENT ON INDEX core.uq_async_operation_step_key IS '约束 uq_async_operation_
 COMMENT ON INDEX core.pk_idempotency_request IS '约束 pk_idempotency_request 的支撑唯一索引。';
 COMMENT ON INDEX core.uq_idempotency_request IS '约束 uq_idempotency_request 的支撑唯一索引。';
 COMMENT ON INDEX core.ix_fk_idempotency_request_operation_id IS '查询索引：优化 core.idempotency_request 按 operation_id 的访问。';
-

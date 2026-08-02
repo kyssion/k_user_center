@@ -61,7 +61,25 @@ SELECT 'V002_MISSING_MIGRATION', required_version, '迁移版本未登记'
     'baseline:org:seed',
     'baseline:authz:seed',
     'baseline:finalize',
-    'baseline:roles'
+    'baseline:roles',
+    'baseline:core:security',
+    'baseline:iam:security',
+    'baseline:authn:security',
+    'baseline:oauth:security',
+    'baseline:org:security',
+    'baseline:authz:security',
+    'baseline:profile:security',
+    'baseline:privacy:security',
+    'baseline:federation:security',
+    'baseline:risk:security',
+    'baseline:workload:security',
+    'baseline:assurance:security',
+    'baseline:crypto:security',
+    'baseline:control:security',
+    'baseline:integration:security',
+    'baseline:audit:security',
+    'baseline:messaging:security',
+    'baseline:migration:security'
   ]) required_version
  WHERE to_regclass('core.schema_migration') IS NULL
     OR NOT EXISTS (SELECT 1 FROM core.schema_migration m WHERE m.version = required_version);
@@ -446,6 +464,102 @@ SELECT 'V017_APPLICATION_SENSITIVE_READ', relation_name, 'kuc_app 不得读取�
   ]) AS x(relation_name)
  WHERE has_table_privilege('kuc_app', relation_name, 'SELECT');
 
+INSERT INTO kuc_verification_violation
+SELECT 'V017_REQUIRED_TABLE_PRIVILEGE', role_name || ':' || relation_name || ':' || privilege_name,
+       'Schema security.sql 缺少关键表权限'
+  FROM (VALUES
+      ('kuc_app', 'iam.user_account', 'UPDATE'),
+      ('kuc_app', 'org.membership', 'INSERT'),
+      ('kuc_app', 'integration.outbox_event', 'INSERT'),
+      ('kuc_authn_writer', 'authn.login_transaction', 'UPDATE'),
+      ('kuc_authn_writer', 'oauth.refresh_token', 'INSERT'),
+      ('kuc_control_writer', 'control.config_release', 'UPDATE'),
+      ('kuc_control_writer', 'crypto.key_asset', 'INSERT'),
+      ('kuc_outbox_dispatcher', 'integration.webhook_delivery', 'INSERT'),
+      ('kuc_message_dispatcher', 'messaging.delivery_receipt', 'INSERT'),
+      ('kuc_audit_writer', 'audit.audit_event', 'INSERT'),
+      ('kuc_auditor', 'audit.audit_event', 'SELECT'),
+      ('kuc_readonly', 'core.duration_policy', 'SELECT')
+  ) AS x(role_name, relation_name, privilege_name)
+ WHERE NOT has_table_privilege(role_name, relation_name, privilege_name);
+
+INSERT INTO kuc_verification_violation
+SELECT 'V017_REQUIRED_COLUMN_PRIVILEGE', role_name || ':' || relation_name || '.' || column_name || ':' || privilege_name,
+       'Schema security.sql 缺少关键列权限'
+  FROM (VALUES
+      ('kuc_outbox_dispatcher', 'integration.outbox_event', 'publish_state', 'UPDATE'),
+      ('kuc_outbox_dispatcher', 'integration.webhook_delivery', 'delivery_state', 'UPDATE'),
+      ('kuc_message_dispatcher', 'messaging.message_send', 'send_state', 'UPDATE'),
+      ('kuc_message_dispatcher', 'iam.identifier', 'value_cipher', 'SELECT')
+  ) AS x(role_name, relation_name, column_name, privilege_name)
+ WHERE NOT has_column_privilege(role_name, relation_name, column_name, privilege_name);
+
+INSERT INTO kuc_verification_violation
+SELECT 'V017_REQUIRED_FUNCTION_PRIVILEGE', role_name || ':' || routine_name, 'Schema security.sql 缺少关键函数权限'
+  FROM (VALUES
+      ('kuc_authn_writer', 'oauth.fn_mark_refresh_token_reuse(uuid,text)'),
+      ('kuc_audit_writer', 'core.fn_hash_jsonb(jsonb)'),
+      ('kuc_migrator', 'core.fn_apply_complete_column_comments()'),
+      ('kuc_migrator', 'core.fn_apply_complete_object_comments()')
+  ) AS x(role_name, routine_name)
+ WHERE NOT has_function_privilege(role_name, routine_name, 'EXECUTE');
+
+INSERT INTO kuc_verification_violation
+SELECT 'V017_READONLY_SENSITIVE_READ', relation_name,
+       'kuc_readonly 不得读取标识密文、认证秘密、Token、敏感资料、机器凭证、密钥引用、审计 Outbox 或消息密文'
+  FROM unnest(ARRAY[
+      'iam.identifier','iam.identifier_tombstone',
+      'authn.password_credential','authn.password_history','authn.recovery_code',
+      'authn.verification_challenge','authn.device_authorization',
+      'oauth.client_credential','oauth.refresh_token','oauth.authorization_code','oauth.reference_access_token',
+      'profile.sensitive_attribute','profile.business_profile','workload.machine_credential','crypto.key_asset',
+      'audit.audit_outbox','messaging.message_send'
+  ]) AS x(relation_name)
+ WHERE has_table_privilege('kuc_readonly', relation_name, 'SELECT');
+
+INSERT INTO kuc_verification_violation
+SELECT 'V017_PUBLIC_FUNCTION_EXECUTE',
+       format('%I.%I(%s)', n.nspname, p.proname, pg_get_function_identity_arguments(p.oid)),
+       '平台函数仍向 PUBLIC 开放 EXECUTE；应由所属 Schema/security.sql 收敛'
+  FROM pg_proc p
+  JOIN pg_namespace n ON n.oid = p.pronamespace
+  CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) acl
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND acl.grantee = 0
+   AND acl.privilege_type = 'EXECUTE';
+
+INSERT INTO kuc_verification_violation
+SELECT 'V017_MIGRATOR_SCHEMA_PRIVILEGE', n.nspname,
+       'kuc_migrator 缺少 Schema USAGE 或 CREATE 权限'
+  FROM pg_namespace n
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND (NOT has_schema_privilege('kuc_migrator', n.oid, 'USAGE')
+        OR NOT has_schema_privilege('kuc_migrator', n.oid, 'CREATE'));
+
+INSERT INTO kuc_verification_violation
+SELECT 'V017_MIGRATOR_TABLE_PRIVILEGE', c.oid::regclass::text,
+       'kuc_migrator 缺少基表完整迁移权限'
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND c.relkind IN ('r','p')
+   AND (NOT has_table_privilege('kuc_migrator', c.oid, 'SELECT')
+        OR NOT has_table_privilege('kuc_migrator', c.oid, 'INSERT')
+        OR NOT has_table_privilege('kuc_migrator', c.oid, 'UPDATE')
+        OR NOT has_table_privilege('kuc_migrator', c.oid, 'DELETE')
+        OR NOT has_table_privilege('kuc_migrator', c.oid, 'TRUNCATE')
+        OR NOT has_table_privilege('kuc_migrator', c.oid, 'REFERENCES')
+        OR NOT has_table_privilege('kuc_migrator', c.oid, 'TRIGGER'));
+
+INSERT INTO kuc_verification_violation
+SELECT 'V017_MIGRATOR_FUNCTION_PRIVILEGE',
+       format('%I.%I(%s)', n.nspname, p.proname, pg_get_function_identity_arguments(p.oid)),
+       'kuc_migrator 缺少平台函数 EXECUTE 权限'
+  FROM pg_proc p
+  JOIN pg_namespace n ON n.oid = p.pronamespace
+ WHERE n.nspname = ANY(ARRAY['core','iam','authn','oauth','org','authz','profile','privacy','federation','risk','workload','assurance','crypto','control','integration','audit','messaging','migration'])
+   AND NOT has_function_privilege('kuc_migrator', p.oid, 'EXECUTE');
+
 
 INSERT INTO kuc_verification_violation
 SELECT 'V018_REQUIREMENT_TRACE_INCOMPLETE', 'core.requirement_trace', '能力地图/蓝图的 218 个 REQ/API/EVT/INV 标识未全部种入追踪矩阵'
@@ -614,4 +728,3 @@ $$;
 
 COMMIT;
 SELECT '数据库结构、注释与关键不变量验证通过' AS verification_result;
-

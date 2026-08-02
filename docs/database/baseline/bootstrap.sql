@@ -1,7 +1,7 @@
 
 -- =============================================================================
 -- baseline/bootstrap.sql
--- PostgreSQL 基线、Schema、安全函数与迁移台账
+-- PostgreSQL 基线、Schema 与迁移台账
 -- 目标：PostgreSQL 16+；应用：.NET 10 + SqlSugar
 -- =============================================================================
 
@@ -127,130 +127,10 @@ END;
 $$;
 COMMENT ON FUNCTION core.fn_register_migration(text, text, text) IS '登记迁移并锁定版本、描述和可选 SHA-256；同版本描述或非空摘要漂移时失败。';
 
-CREATE OR REPLACE FUNCTION core.fn_touch_updated_at()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
-BEGIN
-    NEW.updated_at := clock_timestamp();
-    RETURN NEW;
-END;
-$$;
-COMMENT ON FUNCTION core.fn_touch_updated_at() IS '统一维护 updated_at；安全判断使用数据库可信时钟。';
-
-CREATE OR REPLACE FUNCTION core.fn_increment_row_version()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
-BEGIN
-    NEW.row_version := OLD.row_version + 1;
-    RETURN NEW;
-END;
-$$;
-COMMENT ON FUNCTION core.fn_increment_row_version() IS '数据库强制将 row_version 精确递增 1；应用仍必须使用原版本做 compare-and-set。';
-
-CREATE OR REPLACE FUNCTION core.fn_forbid_epoch_decrease()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
-DECLARE
-    v_column text := TG_ARGV[0];
-    v_old bigint;
-    v_new bigint;
-BEGIN
-    EXECUTE format('SELECT ($1).%I, ($2).%I', v_column, v_column)
-       INTO v_old, v_new USING OLD, NEW;
-    IF v_new < v_old THEN
-        RAISE EXCEPTION '% 不得回退：% -> %', v_column, v_old, v_new USING ERRCODE = '23514';
-    END IF;
-    RETURN NEW;
-END;
-$$;
-COMMENT ON FUNCTION core.fn_forbid_epoch_decrease() IS '保证 user/client/tenant/consent security epoch 单调递增。';
-
-CREATE OR REPLACE FUNCTION core.fn_append_only()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
-BEGIN
-    RAISE EXCEPTION '% 是追加型对象，禁止 %', TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME, TG_OP
-        USING ERRCODE = '55000';
-END;
-$$;
-COMMENT ON FUNCTION core.fn_append_only() IS '阻断追加型审计、撤销、投递证据的 UPDATE/DELETE。';
-
-CREATE OR REPLACE FUNCTION core.fn_terminal_state_guard()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
-DECLARE
-    v_column text := TG_ARGV[0];
-    v_old text;
-    v_new text;
-    v_terminal text[];
-BEGIN
-    v_terminal := TG_ARGV[1:TG_NARGS - 1];
-    EXECUTE format('SELECT ($1).%I, ($2).%I', v_column, v_column)
-       INTO v_old, v_new USING OLD, NEW;
-    IF v_old = ANY(v_terminal) AND v_new IS DISTINCT FROM v_old THEN
-        RAISE EXCEPTION 'INVALID_STATE_TRANSITION: %.% 的终态 % 不得离开', TG_TABLE_NAME, v_column, v_old
-            USING ERRCODE = '23514';
-    END IF;
-    RETURN NEW;
-END;
-$$;
-COMMENT ON FUNCTION core.fn_terminal_state_guard() IS '通用终态保护触发器；参数为状态列名和终态列表。';
-
-CREATE TABLE core.public_id_ledger (
-    public_id       text        NOT NULL,
-    entity_kind     text        NOT NULL,
-    entity_id       uuid        NOT NULL,
-    issued_at       timestamptz NOT NULL DEFAULT clock_timestamp(),
-    CONSTRAINT pk_public_id_ledger PRIMARY KEY (public_id),
-    CONSTRAINT uq_public_id_ledger_entity UNIQUE (entity_kind, entity_id),
-    CONSTRAINT ck_public_id_ledger_format CHECK (public_id ~ '^[a-z][a-z0-9]{1,11}_[A-Za-z0-9_-]{16,64}$')
-
-);
-COMMENT ON TABLE core.public_id_ledger IS 'INV-G-001：UID、Subject ID、Membership ID 及其他对外主体标识的永久占用台账；实体删除也不释放。';
-COMMENT ON COLUMN core.public_id_ledger.public_id IS '不可复用的公开稳定标识；实体删除后仍永久占用。';
-COMMENT ON COLUMN core.public_id_ledger.entity_kind IS '公开标识所属实体类别的稳定机器代码。';
-COMMENT ON COLUMN core.public_id_ledger.entity_id IS '实体内部 UUID；与 entity_kind 共同定位原始实体。';
-COMMENT ON COLUMN core.public_id_ledger.issued_at IS '数据库可信时钟记录的公开标识签发时间。';
-COMMENT ON CONSTRAINT pk_public_id_ledger ON core.public_id_ledger IS '主键约束：保证公开标识全平台唯一且不可复用。';
-COMMENT ON CONSTRAINT uq_public_id_ledger_entity ON core.public_id_ledger IS '唯一约束：同一实体只能登记一个公开稳定标识。';
-COMMENT ON CONSTRAINT ck_public_id_ledger_format ON core.public_id_ledger IS '检查约束：公开标识必须符合类型前缀与 URL-safe 随机主体格式。';
-COMMENT ON INDEX core.pk_public_id_ledger IS '约束 pk_public_id_ledger 的支撑唯一索引。';
-COMMENT ON INDEX core.uq_public_id_ledger_entity IS '约束 uq_public_id_ledger_entity 的支撑唯一索引。';
-
-CREATE OR REPLACE FUNCTION core.fn_register_public_id()
-RETURNS trigger
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog, core
-AS $$
-BEGIN
-    INSERT INTO core.public_id_ledger(public_id, entity_kind, entity_id)
-    VALUES (NEW.public_id, TG_ARGV[0], NEW.id);
-    RETURN NEW;
-END;
-$$;
-COMMENT ON FUNCTION core.fn_register_public_id() IS '在实体插入时以受限 SECURITY DEFINER 权限原子登记不可复用 public_id。';
-
-CREATE OR REPLACE FUNCTION core.fn_hash_jsonb(p_value jsonb)
-RETURNS bytea
-LANGUAGE sql
-IMMUTABLE
-STRICT
-AS $$
-    SELECT digest(convert_to(p_value::text, 'UTF8'), 'sha256');
-$$;
-COMMENT ON FUNCTION core.fn_hash_jsonb(jsonb) IS '对 PostgreSQL JSONB 规范文本计算 SHA-256；用于数据库自有审计链、迁移和诊断，不作为 .NET 业务上下文摘要或密码哈希。';
-
 SELECT core.fn_register_migration(
     '000',
-    'PostgreSQL 基线、Schema、安全函数与迁移台账',
+    'PostgreSQL 基线、Schema 与迁移台账',
     NULLIF(current_setting('kuc.migration_sha256', true), '')
 );
 
 COMMIT;
-

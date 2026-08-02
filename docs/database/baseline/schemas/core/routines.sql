@@ -4,6 +4,104 @@
 -- PostgreSQL 16+；应用技术栈：.NET 10 + SqlSugar
 -- =============================================================================
 
+CREATE OR REPLACE FUNCTION core.fn_touch_updated_at()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    NEW.updated_at := clock_timestamp();
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION core.fn_touch_updated_at() IS '统一维护 updated_at；安全判断使用数据库可信时钟。';
+
+CREATE OR REPLACE FUNCTION core.fn_increment_row_version()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    NEW.row_version := OLD.row_version + 1;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION core.fn_increment_row_version() IS '数据库强制将 row_version 精确递增 1；应用仍必须使用原版本做 compare-and-set。';
+
+CREATE OR REPLACE FUNCTION core.fn_forbid_epoch_decrease()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_column text := TG_ARGV[0];
+    v_old bigint;
+    v_new bigint;
+BEGIN
+    EXECUTE format('SELECT ($1).%I, ($2).%I', v_column, v_column)
+       INTO v_old, v_new USING OLD, NEW;
+    IF v_new < v_old THEN
+        RAISE EXCEPTION '% 不得回退：% -> %', v_column, v_old, v_new USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION core.fn_forbid_epoch_decrease() IS '保证 user/client/tenant/consent security epoch 单调递增。';
+
+CREATE OR REPLACE FUNCTION core.fn_append_only()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    RAISE EXCEPTION '% 是追加型对象，禁止 %', TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME, TG_OP
+        USING ERRCODE = '55000';
+END;
+$$;
+COMMENT ON FUNCTION core.fn_append_only() IS '阻断追加型审计、撤销、投递证据的 UPDATE/DELETE。';
+
+CREATE OR REPLACE FUNCTION core.fn_terminal_state_guard()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_column text := TG_ARGV[0];
+    v_old text;
+    v_new text;
+    v_terminal text[];
+BEGIN
+    v_terminal := TG_ARGV[1:TG_NARGS - 1];
+    EXECUTE format('SELECT ($1).%I, ($2).%I', v_column, v_column)
+       INTO v_old, v_new USING OLD, NEW;
+    IF v_old = ANY(v_terminal) AND v_new IS DISTINCT FROM v_old THEN
+        RAISE EXCEPTION 'INVALID_STATE_TRANSITION: %.% 的终态 % 不得离开', TG_TABLE_NAME, v_column, v_old
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION core.fn_terminal_state_guard() IS '通用终态保护触发器；参数为状态列名和终态列表。';
+
+CREATE OR REPLACE FUNCTION core.fn_register_public_id()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, core
+AS $$
+BEGIN
+    INSERT INTO core.public_id_ledger(public_id, entity_kind, entity_id)
+    VALUES (NEW.public_id, TG_ARGV[0], NEW.id);
+    RETURN NEW;
+END;
+$$;
+COMMENT ON FUNCTION core.fn_register_public_id() IS '在实体插入时以受限 SECURITY DEFINER 权限原子登记不可复用 public_id。';
+
+CREATE OR REPLACE FUNCTION core.fn_hash_jsonb(p_value jsonb)
+RETURNS bytea
+LANGUAGE sql
+IMMUTABLE
+STRICT
+AS $$
+    SELECT digest(convert_to(p_value::text, 'UTF8'), 'sha256');
+$$;
+COMMENT ON FUNCTION core.fn_hash_jsonb(jsonb) IS '对 PostgreSQL JSONB 规范文本计算 SHA-256；用于数据库自有审计链、迁移和诊断，不作为 .NET 业务上下文摘要或密码哈希。';
+
 CREATE OR REPLACE FUNCTION core.fn_apply_complete_column_comments()
 RETURNS integer
 LANGUAGE plpgsql
@@ -314,4 +412,3 @@ COMMENT ON TRIGGER trg_security_profile_immutable ON core.security_profile IS '�
 COMMENT ON TRIGGER trg_duration_policy_immutable ON core.duration_policy IS '触发器：调用 core.fn_immutable_except 维护数据库结构完整性、不可变证据或关键原子安全底线。';
 
 COMMENT ON TRIGGER trg_data_classification_immutable ON core.data_classification IS '触发器：调用 core.fn_immutable_except 维护数据库结构完整性、不可变证据或关键原子安全底线。';
-

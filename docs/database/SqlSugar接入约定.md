@@ -124,7 +124,7 @@ db.DbMaintenance.AddColumn(...);
 允许：
 
 - 应用启动只读取 `core.schema_migration` 检查最低兼容版本。
-- CI/部署任务只使用 `psql` 执行 `docs/database/baseline/build.sql`；基线按 `baseline/schemas/<schema>/` 组织，局部对象由 `build.sql` 构建，跨域绑定由同目录 `links.sql` 在第二阶段执行。
+- CI/部署任务只使用 `psql` 执行 `docs/database/baseline/build.sql`；先构建 `core`，再构建其余 Schema，跨域绑定由同目录 `links.sql` 执行，对象权限由 `roles.sql` 之后的同目录 `security.sql` 执行。
 - 生产迁移摘要按版本编排器及其递归 `\ir` 文件生成复合 SHA-256，禁止只散列顶层编排文件。
 - Schema 变更采用 expand → migrate/backfill → contract；破坏性变更必须新主版本和迁移窗口。
 - SqlSugar 实体不是数据库结构权威，不能依据实体自动删除列、索引、约束、注释或触发器。
