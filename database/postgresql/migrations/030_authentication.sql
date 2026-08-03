@@ -160,7 +160,7 @@ CREATE TABLE iam.auth_challenges (
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT uq_auth_challenge_token UNIQUE (token_hash),
-    CONSTRAINT ck_auth_challenge_attempts CHECK (attempt_count >= 0 AND max_attempts > 0),
+    CONSTRAINT ck_auth_challenge_attempts CHECK (attempt_count >= 0 AND max_attempts > 0 AND attempt_count <= max_attempts),
     CONSTRAINT ck_auth_challenge_version CHECK (row_version >= 0),
     CONSTRAINT ck_auth_challenge_expiry CHECK (expires_at > created_at)
 );

@@ -252,11 +252,13 @@ CREATE TABLE iam.memberships (
     state varchar(40) NOT NULL,
     joined_at timestamptz,
     left_at timestamptz,
+    current_occupancy_slot smallint DEFAULT 1,
     attributes jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     row_version bigint NOT NULL DEFAULT 0,
-    CONSTRAINT uq_memberships_scope_user UNIQUE (scope_type, scope_id, user_id),
+    CONSTRAINT uq_memberships_current UNIQUE (scope_type, scope_id, user_id, current_occupancy_slot),
+    CONSTRAINT ck_memberships_current_slot CHECK (current_occupancy_slot IS NULL OR current_occupancy_slot = 1),
     CONSTRAINT ck_memberships_version CHECK (row_version >= 0)
 );
 COMMENT ON TABLE iam.memberships IS '用户与业务线、租户或组织的成员关系；作用域一致性和业务资格由 TENANT 代码校验。';
@@ -270,6 +272,7 @@ COMMENT ON COLUMN iam.memberships.organization_id IS '可空；逻辑引用 iam.
 COMMENT ON COLUMN iam.memberships.state IS '成员状态；邀请、加入、暂停和离开由 TENANT 代码维护。';
 COMMENT ON COLUMN iam.memberships.joined_at IS '可空；成员关系生效时间。';
 COMMENT ON COLUMN iam.memberships.left_at IS '可空；成员关系结束时间。';
+COMMENT ON COLUMN iam.memberships.current_occupancy_slot IS '可空；新记录默认占位 1，终态历史记录写 NULL。数据库只保证同一作用域和用户最多一个当前 Membership；何时释放占位由 TENANT 状态机决定。';
 COMMENT ON COLUMN iam.memberships.attributes IS '作用域内成员扩展属性；代码按 Schema 校验。';
 COMMENT ON COLUMN iam.memberships.created_at IS '数据库插入时间。';
 COMMENT ON COLUMN iam.memberships.updated_at IS '数据库更新时间；应用显式刷新。';
@@ -292,7 +295,7 @@ CREATE TABLE iam.invitations (
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT uq_invitations_token UNIQUE (token_hash),
-    CONSTRAINT ck_invitations_inviter CHECK (inviter_user_id IS NOT NULL OR inviter_machine_id IS NOT NULL),
+    CONSTRAINT ck_invitations_inviter CHECK ((inviter_user_id IS NOT NULL) <> (inviter_machine_id IS NOT NULL)),
     CONSTRAINT ck_invitations_version CHECK (row_version >= 0),
     CONSTRAINT ck_invitations_expiry CHECK (expires_at > created_at)
 );

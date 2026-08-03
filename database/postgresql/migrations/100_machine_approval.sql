@@ -94,8 +94,9 @@ CREATE TABLE iam.workload_trust_bundle_versions (
     valid_until timestamptz NOT NULL,
     published_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT uq_workload_trust_bundle UNIQUE (trust_domain, version),
-    CONSTRAINT ck_workload_trust_versions CHECK (version > 0 AND schema_version > 0),
+    CONSTRAINT ck_workload_trust_versions CHECK (version > 0 AND schema_version > 0 AND row_version >= 0),
     CONSTRAINT ck_workload_trust_validity CHECK (valid_until > valid_from)
 );
 COMMENT ON TABLE iam.workload_trust_bundle_versions IS '工作负载信任域的不可变 Trust Bundle 版本；发布、重叠和验证由 MACHINE 代码执行。';
@@ -110,6 +111,7 @@ COMMENT ON COLUMN iam.workload_trust_bundle_versions.valid_from IS '验证生效
 COMMENT ON COLUMN iam.workload_trust_bundle_versions.valid_until IS '验证失效时间。';
 COMMENT ON COLUMN iam.workload_trust_bundle_versions.published_at IS '可空；发布时间。';
 COMMENT ON COLUMN iam.workload_trust_bundle_versions.created_at IS '数据库插入时间。';
+COMMENT ON COLUMN iam.workload_trust_bundle_versions.row_version IS '发布生命周期元数据的乐观锁版本；信任包载荷字段不可更新。';
 
 CREATE TABLE iam.workload_attestations (
     id uuid NOT NULL,
@@ -157,7 +159,7 @@ CREATE TABLE iam.delegations (
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     row_version bigint NOT NULL DEFAULT 0,
-    CONSTRAINT ck_delegation_depth CHECK (max_depth >= 1 AND current_depth >= 1),
+    CONSTRAINT ck_delegation_depth CHECK (max_depth >= 1 AND current_depth >= 1 AND current_depth <= max_depth),
     CONSTRAINT ck_delegation_validity CHECK (valid_until > valid_from),
     CONSTRAINT ck_delegation_version CHECK (row_version >= 0)
 );

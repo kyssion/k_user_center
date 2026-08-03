@@ -114,7 +114,10 @@ CREATE TABLE iam.directory_sync_batches (
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT uq_directory_sync_operation UNIQUE (operation_id),
-    CONSTRAINT ck_directory_sync_counts CHECK (read_count >= 0 AND created_count >= 0 AND updated_count >= 0 AND deleted_count >= 0 AND conflict_count >= 0),
+    CONSTRAINT ck_directory_sync_counts CHECK (
+        read_count >= 0 AND created_count >= 0 AND updated_count >= 0 AND deleted_count >= 0 AND conflict_count >= 0
+        AND created_count + updated_count + deleted_count + conflict_count <= read_count
+    ),
     CONSTRAINT ck_directory_sync_batch_version CHECK (row_version >= 0)
 );
 COMMENT ON TABLE iam.directory_sync_batches IS '目录同步批次统计和结果；对象处理、冲突和游标提交由 FED 代码编排。';

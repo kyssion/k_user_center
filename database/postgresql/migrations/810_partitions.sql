@@ -21,6 +21,15 @@ CREATE TABLE IF NOT EXISTS iam.inbox_messages_h05 PARTITION OF iam.inbox_message
 CREATE TABLE IF NOT EXISTS iam.inbox_messages_h06 PARTITION OF iam.inbox_messages FOR VALUES WITH (MODULUS 8, REMAINDER 6);
 CREATE TABLE IF NOT EXISTS iam.inbox_messages_h07 PARTITION OF iam.inbox_messages FOR VALUES WITH (MODULUS 8, REMAINDER 7);
 
+CREATE TABLE IF NOT EXISTS iam.access_token_records_h00 PARTITION OF iam.access_token_records FOR VALUES WITH (MODULUS 8, REMAINDER 0);
+CREATE TABLE IF NOT EXISTS iam.access_token_records_h01 PARTITION OF iam.access_token_records FOR VALUES WITH (MODULUS 8, REMAINDER 1);
+CREATE TABLE IF NOT EXISTS iam.access_token_records_h02 PARTITION OF iam.access_token_records FOR VALUES WITH (MODULUS 8, REMAINDER 2);
+CREATE TABLE IF NOT EXISTS iam.access_token_records_h03 PARTITION OF iam.access_token_records FOR VALUES WITH (MODULUS 8, REMAINDER 3);
+CREATE TABLE IF NOT EXISTS iam.access_token_records_h04 PARTITION OF iam.access_token_records FOR VALUES WITH (MODULUS 8, REMAINDER 4);
+CREATE TABLE IF NOT EXISTS iam.access_token_records_h05 PARTITION OF iam.access_token_records FOR VALUES WITH (MODULUS 8, REMAINDER 5);
+CREATE TABLE IF NOT EXISTS iam.access_token_records_h06 PARTITION OF iam.access_token_records FOR VALUES WITH (MODULUS 8, REMAINDER 6);
+CREATE TABLE IF NOT EXISTS iam.access_token_records_h07 PARTITION OF iam.access_token_records FOR VALUES WITH (MODULUS 8, REMAINDER 7);
+
 COMMENT ON TABLE iam.outbox_events_h00 IS 'Outbox event_id Hash 分区 0/8。';
 COMMENT ON TABLE iam.outbox_events_h01 IS 'Outbox event_id Hash 分区 1/8。';
 COMMENT ON TABLE iam.outbox_events_h02 IS 'Outbox event_id Hash 分区 2/8。';
@@ -37,6 +46,14 @@ COMMENT ON TABLE iam.inbox_messages_h04 IS 'Inbox consumer_id 与 event_id Hash 
 COMMENT ON TABLE iam.inbox_messages_h05 IS 'Inbox consumer_id 与 event_id Hash 分区 5/8。';
 COMMENT ON TABLE iam.inbox_messages_h06 IS 'Inbox consumer_id 与 event_id Hash 分区 6/8。';
 COMMENT ON TABLE iam.inbox_messages_h07 IS 'Inbox consumer_id 与 event_id Hash 分区 7/8。';
+COMMENT ON TABLE iam.access_token_records_h00 IS 'Access Token JTI Hash 分区 0/8。';
+COMMENT ON TABLE iam.access_token_records_h01 IS 'Access Token JTI Hash 分区 1/8。';
+COMMENT ON TABLE iam.access_token_records_h02 IS 'Access Token JTI Hash 分区 2/8。';
+COMMENT ON TABLE iam.access_token_records_h03 IS 'Access Token JTI Hash 分区 3/8。';
+COMMENT ON TABLE iam.access_token_records_h04 IS 'Access Token JTI Hash 分区 4/8。';
+COMMENT ON TABLE iam.access_token_records_h05 IS 'Access Token JTI Hash 分区 5/8。';
+COMMENT ON TABLE iam.access_token_records_h06 IS 'Access Token JTI Hash 分区 6/8。';
+COMMENT ON TABLE iam.access_token_records_h07 IS 'Access Token JTI Hash 分区 7/8。';
 
 -- 首次部署创建上月、当前月及未来 24 个月，并创建兜底分区。
 -- 该 DO 块只在 Migration 会话执行，不创建持久化 Routine，也不承载业务逻辑。
@@ -52,7 +69,6 @@ BEGIN
         SELECT * FROM (VALUES
             ('audit_events', 'recorded_at'),
             ('authentication_attempts', 'occurred_at'),
-            ('access_token_records', 'issued_at'),
             ('authorization_decisions', 'decided_at'),
             ('risk_signals', 'occurred_at'),
             ('workload_attestations', 'received_at'),
@@ -91,4 +107,3 @@ BEGIN
     END LOOP;
 END
 $partition_setup$;
-

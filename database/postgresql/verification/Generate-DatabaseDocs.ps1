@@ -304,7 +304,7 @@ foreach ($kindGroup in ($requirementIds | Group-Object { ($_ -split '-')[0] } | 
     [void]$traceability.AppendLine("- $($kindGroup.Name)：$($kindGroup.Count)")
 }
 [void]$traceability.AppendLine()
-[void]$traceability.AppendLine('持久化边界列表示该编号可能使用的数据库事实，不表示每项能力都必须新建表。状态机、跨对象校验、权限、风险、审批、协议和流程属于非数据库职责，进入编码阶段后在单独的代码实施文档中展开。')
+[void]$traceability.AppendLine('持久化边界列表示该编号可能使用的数据库事实，不表示每项能力都必须新建表。状态机、跨对象校验、业务授权求值、风险、审批、协议和流程属于非数据库职责，进入编码阶段后在单独的代码实施文档中展开。')
 [void]$traceability.AppendLine()
 [void]$traceability.AppendLine('| 编号 | 首次来源文档 | 领域 | 数据库持久化边界 | 非数据库职责提示 | 数据库验证与后续验收提示 |')
 [void]$traceability.AppendLine('|---|---|---|---|---|---|')
@@ -316,7 +316,7 @@ foreach ($id in $requirementIds) {
         elseif ($kind -eq 'SLO') { '`configuration_versions` 的 `SLO_BASELINE`，运行指标进入监控系统' }
         elseif ($kind -in @('TTL','TERM')) { '`configuration_versions` 的 `DURATION_BASELINE`，对象表保存实际到期时间' }
         else { $domainStorage[$domain] }
-    $nonDatabaseResponsibility = "$domain 领域的状态转换、跨对象有效性、权限、风险、审批、协议和流程属于非数据库职责；具体实现另行成册。"
+    $nonDatabaseResponsibility = "$domain 领域的状态转换、跨对象有效性、业务授权求值、风险、审批、协议和流程属于非数据库职责；具体实现另行成册。"
     $domainAtEvidence = if ($atIdsByDomain.ContainsKey($domain)) {
         (($atIdsByDomain[$domain] | Sort-Object | ForEach-Object { "``$_``" }) -join '、')
     } else { 'SQL Verification 001–008 与领域负向测试' }
@@ -404,11 +404,12 @@ $report = [System.Text.StringBuilder]::new()
 
 New-Item -ItemType Directory -Force -Path $outputPath | Out-Null
 $utf8 = [System.Text.UTF8Encoding]::new($false)
-[System.IO.File]::WriteAllText((Join-Path $outputPath '数据字典.md'), $dictionary.ToString(), $utf8)
-[System.IO.File]::WriteAllText((Join-Path $outputPath '表字段索引清单.md'), $inventory.ToString(), $utf8)
-[System.IO.File]::WriteAllText((Join-Path $outputPath '数据库对象检查报告.md'), $report.ToString(), $utf8)
-[System.IO.File]::WriteAllText($traceabilityPath, $traceability.ToString(), $utf8)
-[System.IO.File]::WriteAllText($logicalRelationPath, $relationDocument.ToString(), $utf8)
-[System.IO.File]::WriteAllText((Join-Path $verificationPath '006_logical_relation_orphan_check.sql'), $orphanCheck.ToString(), $utf8)
+$finalNewLine = [Environment]::NewLine
+[System.IO.File]::WriteAllText((Join-Path $outputPath '数据字典.md'), $dictionary.ToString().TrimEnd() + $finalNewLine, $utf8)
+[System.IO.File]::WriteAllText((Join-Path $outputPath '表字段索引清单.md'), $inventory.ToString().TrimEnd() + $finalNewLine, $utf8)
+[System.IO.File]::WriteAllText((Join-Path $outputPath '数据库对象检查报告.md'), $report.ToString().TrimEnd() + $finalNewLine, $utf8)
+[System.IO.File]::WriteAllText($traceabilityPath, $traceability.ToString().TrimEnd() + $finalNewLine, $utf8)
+[System.IO.File]::WriteAllText($logicalRelationPath, $relationDocument.ToString().TrimEnd() + $finalNewLine, $utf8)
+[System.IO.File]::WriteAllText((Join-Path $verificationPath '006_logical_relation_orphan_check.sql'), $orphanCheck.ToString().TrimEnd() + $finalNewLine, $utf8)
 
 Write-Output "Generated: $($tables.Count) tables; $($indexMatches.Count) indexes; $($constraintMatches.Count) constraints; $($requirementIds.Count) database coverage IDs; $($directRelations.Count) executable relations."

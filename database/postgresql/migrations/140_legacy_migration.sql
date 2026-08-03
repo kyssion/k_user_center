@@ -87,7 +87,10 @@ CREATE TABLE iam.migration_batches (
     row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT uq_migration_batch_code UNIQUE (system_id, batch_code),
     CONSTRAINT uq_migration_batch_operation UNIQUE (operation_id),
-    CONSTRAINT ck_migration_batch_counts CHECK (total_count >= 0 AND success_count >= 0 AND conflict_count >= 0 AND failure_count >= 0),
+    CONSTRAINT ck_migration_batch_counts CHECK (
+        total_count >= 0 AND success_count >= 0 AND conflict_count >= 0 AND failure_count >= 0
+        AND success_count + conflict_count + failure_count <= total_count
+    ),
     CONSTRAINT ck_migration_batch_version CHECK (row_version >= 0)
 );
 COMMENT ON TABLE iam.migration_batches IS '旧系统迁移批次、检查点和统计；读取、转换、冲突处置和提交由 MIG 代码编排。';

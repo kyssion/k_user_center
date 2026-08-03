@@ -85,8 +85,9 @@ CREATE TABLE iam.jwks_releases (
     active_from timestamptz,
     retired_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT uq_jwks_release_version UNIQUE NULLS NOT DISTINCT (owner_type, owner_id, version),
-    CONSTRAINT ck_jwks_release_version CHECK (version > 0)
+    CONSTRAINT ck_jwks_release_version CHECK (version > 0 AND row_version >= 0)
 );
 COMMENT ON TABLE iam.jwks_releases IS 'JWKS 发布版本元数据；内容由关联 Key 生成，重叠和缓存窗口由 KEY 代码控制。';
 COMMENT ON COLUMN iam.jwks_releases.id IS '应用生成的 JWKS Release UUIDv7。';
@@ -99,6 +100,7 @@ COMMENT ON COLUMN iam.jwks_releases.published_at IS '可空；对外发布时间
 COMMENT ON COLUMN iam.jwks_releases.active_from IS '可空；开始用于签名或验证的时间。';
 COMMENT ON COLUMN iam.jwks_releases.retired_at IS '可空；退出发布的时间。';
 COMMENT ON COLUMN iam.jwks_releases.created_at IS '数据库插入时间。';
+COMMENT ON COLUMN iam.jwks_releases.row_version IS '发布生命周期元数据的乐观锁版本；发布内容摘要不可更新。';
 
 CREATE TABLE iam.jwks_release_keys (
     id uuid PRIMARY KEY,
@@ -134,8 +136,9 @@ CREATE TABLE iam.configuration_versions (
     approved_by_case_id uuid,
     published_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT uq_configuration_version UNIQUE NULLS NOT DISTINCT (config_type, config_code, scope_type, scope_id, version),
-    CONSTRAINT ck_configuration_version_numbers CHECK (version > 0 AND schema_version > 0)
+    CONSTRAINT ck_configuration_version_numbers CHECK (version > 0 AND schema_version > 0 AND row_version >= 0)
 );
 COMMENT ON TABLE iam.configuration_versions IS '通用不可变配置版本；Schema 校验、语义校验、差异、审批和运行时解释由 CTRL 代码执行。';
 COMMENT ON COLUMN iam.configuration_versions.id IS '应用生成的配置版本 UUIDv7。';
@@ -153,6 +156,7 @@ COMMENT ON COLUMN iam.configuration_versions.created_by_id IS '创建者逻辑 I
 COMMENT ON COLUMN iam.configuration_versions.approved_by_case_id IS '可空；逻辑引用 iam.approval_cases.id。';
 COMMENT ON COLUMN iam.configuration_versions.published_at IS '可空；发布业务时间。';
 COMMENT ON COLUMN iam.configuration_versions.created_at IS '数据库插入时间。';
+COMMENT ON COLUMN iam.configuration_versions.row_version IS '审批和发布生命周期元数据的乐观锁版本；配置载荷字段不可更新。';
 
 CREATE TABLE iam.configuration_releases (
     id uuid PRIMARY KEY,

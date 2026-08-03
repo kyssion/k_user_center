@@ -68,7 +68,7 @@ CREATE TABLE iam.sessions (
     CONSTRAINT uq_sessions_public UNIQUE (session_id),
     CONSTRAINT ck_sessions_profile_version CHECK (security_profile_version > 0),
     CONSTRAINT ck_sessions_epochs CHECK (user_security_epoch >= 0 AND client_security_epoch >= 0 AND (tenant_security_epoch IS NULL OR tenant_security_epoch >= 0) AND (consent_epoch IS NULL OR consent_epoch >= 0) AND (revocation_watermark IS NULL OR revocation_watermark >= 0)),
-    CONSTRAINT ck_sessions_expiry CHECK (absolute_expires_at > created_at AND idle_expires_at > created_at),
+    CONSTRAINT ck_sessions_expiry CHECK (absolute_expires_at > created_at AND idle_expires_at > created_at AND idle_expires_at <= absolute_expires_at),
     CONSTRAINT ck_sessions_version CHECK (row_version >= 0)
 );
 COMMENT ON TABLE iam.sessions IS 'OP/设备会话；有效性、滑动过期、并发会话和撤销由 SESSION 代码判定。';
@@ -293,14 +293,15 @@ CREATE TABLE iam.access_token_records (
     issued_at timestamptz NOT NULL,
     expires_at timestamptz NOT NULL,
     revoked_at timestamptz,
-    CONSTRAINT pk_access_token_records PRIMARY KEY (id, issued_at),
+    CONSTRAINT pk_access_token_records PRIMARY KEY (id, jti),
+    CONSTRAINT uq_access_token_jti UNIQUE (jti),
     CONSTRAINT ck_access_token_profile_version CHECK (security_profile_version > 0),
     CONSTRAINT ck_access_token_epochs CHECK ((user_security_epoch IS NULL OR user_security_epoch >= 0) AND client_security_epoch >= 0 AND (tenant_security_epoch IS NULL OR tenant_security_epoch >= 0) AND (consent_epoch IS NULL OR consent_epoch >= 0) AND (revocation_watermark IS NULL OR revocation_watermark >= 0)),
     CONSTRAINT ck_access_token_expiry CHECK (expires_at > issued_at)
-) PARTITION BY RANGE (issued_at);
-COMMENT ON TABLE iam.access_token_records IS 'Access Token 元数据和撤销定位信息；按 issued_at 月度分区，不保存完整 Token。';
-COMMENT ON COLUMN iam.access_token_records.id IS '应用生成的记录 UUIDv7，与 issued_at 组成分区主键。';
-COMMENT ON COLUMN iam.access_token_records.jti IS 'Token JTI；跨分区唯一性由签发代码和高熵生成保证。';
+) PARTITION BY HASH (jti);
+COMMENT ON TABLE iam.access_token_records IS 'Access Token 元数据和撤销定位信息；按 JTI Hash 分区以维持数据库全局唯一，不保存完整 Token。';
+COMMENT ON COLUMN iam.access_token_records.id IS '应用生成的记录 UUIDv7，与 JTI 组成分区主键。';
+COMMENT ON COLUMN iam.access_token_records.jti IS 'Token JTI；数据库全局唯一且为 Hash 分区键。';
 COMMENT ON COLUMN iam.access_token_records.token_hash IS '可空；Opaque Token 或审计用途的不可逆摘要。';
 COMMENT ON COLUMN iam.access_token_records.user_id IS '可空；自然人 Token 逻辑引用 iam.global_users.id。';
 COMMENT ON COLUMN iam.access_token_records.subject_type IS 'Token Subject 类型，例如 USER、MACHINE 或 EXTERNAL_SUBJECT。';
@@ -326,9 +327,10 @@ COMMENT ON COLUMN iam.access_token_records.session_id IS '可空；逻辑引用 
 COMMENT ON COLUMN iam.access_token_records.user_security_epoch IS '可空；签发时用户安全水位。';
 COMMENT ON COLUMN iam.access_token_records.client_security_epoch IS '签发时 Client 安全水位。';
 COMMENT ON COLUMN iam.access_token_records.tenant_security_epoch IS '可空；签发时租户安全水位。';
-COMMENT ON COLUMN iam.access_token_records.issued_at IS 'Token 签发时间和月度分区键。';
+COMMENT ON COLUMN iam.access_token_records.issued_at IS 'Token 签发时间；用于查询、保留和归档。';
 COMMENT ON COLUMN iam.access_token_records.expires_at IS 'Token 过期时间。';
 COMMENT ON COLUMN iam.access_token_records.revoked_at IS '可空；单 Token 撤销时间。';
+COMMENT ON CONSTRAINT uq_access_token_jti ON iam.access_token_records IS '保证 Access Token JTI 在数据库内全局唯一；因此采用 Hash 而非月度 Range 分区。';
 
 CREATE TABLE iam.revocation_entries (
     id uuid PRIMARY KEY,
@@ -365,7 +367,5 @@ CREATE INDEX ix_sessions_client_state ON iam.sessions (client_id, state, absolut
 CREATE INDEX ix_authorization_codes_expiry ON iam.authorization_codes (state, expires_at);
 CREATE INDEX ix_authorization_grants_user_client ON iam.authorization_grants (user_id, client_id, state);
 CREATE INDEX ix_token_families_grant ON iam.token_families (grant_id, state);
-CREATE INDEX ix_access_token_jti ON iam.access_token_records (jti, issued_at);
 CREATE INDEX ix_access_token_subject ON iam.access_token_records (subject_id, issued_at DESC);
 CREATE INDEX ix_revocation_lookup ON iam.revocation_entries (target_type, target_id, effective_at DESC);
-COMMENT ON INDEX iam.ix_access_token_jti IS '按 JTI 和签发时间定位分区内 Token 元数据。';

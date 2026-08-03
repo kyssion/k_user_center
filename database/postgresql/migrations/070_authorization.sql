@@ -217,8 +217,9 @@ CREATE TABLE iam.policy_versions (
     state varchar(40) NOT NULL,
     published_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT uq_policy_versions UNIQUE NULLS NOT DISTINCT (policy_code, scope_type, scope_id, version),
-    CONSTRAINT ck_policy_versions_numbers CHECK (version > 0 AND schema_version > 0)
+    CONSTRAINT ck_policy_versions_numbers CHECK (version > 0 AND schema_version > 0 AND row_version >= 0)
 );
 COMMENT ON TABLE iam.policy_versions IS '不可变授权策略版本；编译、测试、发布和求值由 AUTHZ 控制面及 PDP 代码完成。';
 COMMENT ON COLUMN iam.policy_versions.id IS '应用生成的策略版本 UUIDv7。';
@@ -232,6 +233,7 @@ COMMENT ON COLUMN iam.policy_versions.payload_digest IS '规范化策略 SHA-256
 COMMENT ON COLUMN iam.policy_versions.state IS '策略版本状态。';
 COMMENT ON COLUMN iam.policy_versions.published_at IS '可空；发布业务时间。';
 COMMENT ON COLUMN iam.policy_versions.created_at IS '数据库插入时间。';
+COMMENT ON COLUMN iam.policy_versions.row_version IS '发布生命周期元数据的乐观锁版本；策略载荷字段不可更新。';
 
 CREATE TABLE iam.policy_bindings (
     id uuid PRIMARY KEY,

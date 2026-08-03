@@ -33,6 +33,9 @@ BEGIN
         ('uq_operations_caller_key'),('uq_approval_cases_execution_id'),
         ('uq_configuration_version'),('uq_policy_versions'),('uq_event_schema_version'),
         ('uq_legacy_external_mapping'),('uq_refresh_token_hash'),('uq_authorization_codes_hash'),
+        ('uq_access_token_jti'),('uq_memberships_current'),('ck_memberships_current_slot'),
+        ('ck_user_identity_target'),('ck_auth_challenge_attempts'),('ck_sessions_expiry'),
+        ('ck_directory_sync_counts'),('ck_delegation_depth'),('ck_migration_batch_counts'),
         ('uq_machine_credential_replacement'),('ck_authorization_grants_granted_at')
       ) AS required(constraint_name)
      WHERE NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conname = required.constraint_name);
@@ -70,9 +73,9 @@ BEGIN
         VALUES
             ('outbox_events','h','HASH (event_id)'),
             ('inbox_messages','h','HASH (consumer_id, event_id)'),
+            ('access_token_records','h','HASH (jti)'),
             ('audit_events','r','RANGE (recorded_at)'),
             ('authentication_attempts','r','RANGE (occurred_at)'),
-            ('access_token_records','r','RANGE (issued_at)'),
             ('authorization_decisions','r','RANGE (decided_at)'),
             ('risk_signals','r','RANGE (occurred_at)'),
             ('workload_attestations','r','RANGE (received_at)'),
@@ -98,7 +101,7 @@ BEGIN
 
     WITH range_parent(table_name) AS (
         VALUES
-            ('audit_events'),('authentication_attempts'),('access_token_records'),('authorization_decisions'),
+            ('audit_events'),('authentication_attempts'),('authorization_decisions'),
             ('risk_signals'),('workload_attestations'),('webhook_deliveries'),('webhook_delivery_attempts'),
             ('message_requests'),('message_delivery_attempts'),('migration_change_logs')
     ), expected_child AS (

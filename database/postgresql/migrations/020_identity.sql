@@ -178,7 +178,11 @@ CREATE TABLE iam.user_identities (
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT uq_user_identity_external UNIQUE (provider_id, external_subject_digest),
-    CONSTRAINT ck_user_identity_target CHECK (identifier_id IS NOT NULL OR external_subject_digest IS NOT NULL),
+    CONSTRAINT ck_user_identity_target CHECK (
+        (identifier_id IS NOT NULL AND provider_id IS NULL AND external_subject_digest IS NULL)
+        OR
+        (identifier_id IS NULL AND provider_id IS NOT NULL AND external_subject_digest IS NOT NULL)
+    ),
     CONSTRAINT ck_user_identity_version CHECK (row_version >= 0)
 );
 COMMENT ON TABLE iam.user_identities IS '用户可登录身份，包括本地标识、社交和企业联合身份；链接生命周期由 ID 领域持有，FED 提供外部身份源事实。';
@@ -196,6 +200,7 @@ COMMENT ON COLUMN iam.user_identities.metadata IS '非秘密身份元数据；�
 COMMENT ON COLUMN iam.user_identities.created_at IS '数据库插入时间。';
 COMMENT ON COLUMN iam.user_identities.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.user_identities.row_version IS '乐观锁版本。';
+COMMENT ON CONSTRAINT ck_user_identity_target ON iam.user_identities IS '本地身份只引用 Identifier；联合身份必须同时保存 Provider 和外部稳定键摘要，禁止缺项或双重目标。';
 
 CREATE TABLE iam.user_aliases (
     id uuid PRIMARY KEY,

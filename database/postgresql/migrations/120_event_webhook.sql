@@ -15,8 +15,9 @@ CREATE TABLE iam.event_schema_versions (
     state varchar(40) NOT NULL,
     published_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT uq_event_schema_version UNIQUE (event_type, schema_version),
-    CONSTRAINT ck_event_schema_version CHECK (schema_version > 0)
+    CONSTRAINT ck_event_schema_version CHECK (schema_version > 0 AND row_version >= 0)
 );
 COMMENT ON TABLE iam.event_schema_versions IS '不可变事件 JSON Schema 版本；兼容性验证、发布和生成代码由 EVENT 控制面执行。';
 COMMENT ON COLUMN iam.event_schema_versions.id IS '应用生成的事件 Schema UUIDv7。';
@@ -29,6 +30,7 @@ COMMENT ON COLUMN iam.event_schema_versions.approval_case_id IS '可空；发布
 COMMENT ON COLUMN iam.event_schema_versions.state IS 'Schema 版本状态。';
 COMMENT ON COLUMN iam.event_schema_versions.published_at IS '可空；发布时间。';
 COMMENT ON COLUMN iam.event_schema_versions.created_at IS '数据库插入时间。';
+COMMENT ON COLUMN iam.event_schema_versions.row_version IS '审批和发布生命周期元数据的乐观锁版本；Schema 内容字段不可更新。';
 
 CREATE TABLE iam.webhook_subscriptions (
     id uuid PRIMARY KEY,

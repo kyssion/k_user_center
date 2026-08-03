@@ -108,8 +108,9 @@ CREATE TABLE iam.agreement_versions (
     effective_at timestamptz,
     retired_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT uq_agreement_version UNIQUE (agreement_type, region_code, version),
-    CONSTRAINT ck_agreement_version CHECK (version > 0)
+    CONSTRAINT ck_agreement_version CHECK (version > 0 AND row_version >= 0)
 );
 COMMENT ON TABLE iam.agreement_versions IS '服务协议和隐私政策的不可变版本元数据；适用性和重新接受判断由 PRIV 代码处理。';
 COMMENT ON COLUMN iam.agreement_versions.id IS '应用生成的协议版本 UUIDv7。';
@@ -123,6 +124,7 @@ COMMENT ON COLUMN iam.agreement_versions.published_at IS '可空；发布时间�
 COMMENT ON COLUMN iam.agreement_versions.effective_at IS '可空；生效时间。';
 COMMENT ON COLUMN iam.agreement_versions.retired_at IS '可空；停止用于新接受的时间。';
 COMMENT ON COLUMN iam.agreement_versions.created_at IS '数据库插入时间。';
+COMMENT ON COLUMN iam.agreement_versions.row_version IS '发布生命周期元数据的乐观锁版本；协议内容字段不可更新。';
 
 CREATE TABLE iam.agreement_acceptances (
     id uuid PRIMARY KEY,

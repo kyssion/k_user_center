@@ -49,8 +49,9 @@ CREATE TABLE iam.message_template_versions (
     state varchar(40) NOT NULL,
     published_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT uq_message_template_version UNIQUE (template_code, channel, locale, version),
-    CONSTRAINT ck_message_template_version CHECK (version > 0)
+    CONSTRAINT ck_message_template_version CHECK (version > 0 AND row_version >= 0)
 );
 COMMENT ON TABLE iam.message_template_versions IS '消息模板不可变版本；变量校验、转义、敏感信息控制和审批由 MSG/CTRL 代码执行。';
 COMMENT ON COLUMN iam.message_template_versions.id IS '应用生成的模板版本 UUIDv7。';
@@ -66,6 +67,7 @@ COMMENT ON COLUMN iam.message_template_versions.approval_case_id IS '可空；�
 COMMENT ON COLUMN iam.message_template_versions.state IS '模板版本状态。';
 COMMENT ON COLUMN iam.message_template_versions.published_at IS '可空；发布时间。';
 COMMENT ON COLUMN iam.message_template_versions.created_at IS '数据库插入时间。';
+COMMENT ON COLUMN iam.message_template_versions.row_version IS '审批和发布生命周期元数据的乐观锁版本；模板内容字段不可更新。';
 
 CREATE TABLE iam.message_requests (
     id uuid NOT NULL,
