@@ -119,7 +119,7 @@ foreach ($sourcePath in @($capabilityMapPath, $blueprintPath)) {
         foreach ($requirementMatch in [regex]::Matches($line, $requirementPattern)) {
             $id = $requirementMatch.Value
             if (-not $requirementIndex.ContainsKey($id)) {
-                $requirementIndex[$id] = "$sourceName`:$lineNo"
+                $requirementIndex[$id] = $sourceName
             }
         }
     }
@@ -212,7 +212,7 @@ $domainStorage = @{
     'PROFILE' = '`user_profiles`、`profile_documents`、`identifiers`、`identifier_bindings`'
     'RISK' = '`risk_signals`、`risk_assessments`、`risk_cases`、`security_signals`、`restriction_entries`'
     'SESSION' = '`devices`、`sessions`、`session_participants`、Token/Grant 表、`revocation_entries`'
-    'SSC' = '`privacy_requests`、`data_export_artifacts`、`deletion_proofs`、`operations`'
+    'SSC' = '复用 `identifiers`、`authenticators`、`authentication_attempts`、`devices`、`sessions`、`authorization_grants`、`consents`、`privacy_requests`、`profile_documents`；不建立重复 SSC 权威表'
     'TENANT' = '`tenants`、`tenant_domains`、`organizations`、`memberships`、`invitations`、`groups`、`group_members`'
     'MIG' = '`legacy_systems`、`legacy_id_mappings`、`migration_batches`、`migration_items`、`migration_change_logs`'
     'COMMON' = '跨领域基础表、审计、Outbox/Inbox 与相关领域表'
@@ -256,18 +256,18 @@ foreach ($atId in ($requirementIds | Where-Object { $_ -like 'AT-*' })) {
 }
 
 $traceability = [System.Text.StringBuilder]::new()
-[void]$traceability.AppendLine('# 需求、能力、存储与测试精确追踪矩阵')
+[void]$traceability.AppendLine('# 需求编号与数据库持久化覆盖索引')
 [void]$traceability.AppendLine()
-[void]$traceability.AppendLine('> 本文件由 `database/postgresql/verification/Generate-DatabaseDocs.ps1` 从能力地图和蓝图的精确编号生成。通配符只用于说明，不作为验收证据。')
+[void]$traceability.AppendLine('> 本文件由 `database/postgresql/verification/Generate-DatabaseDocs.ps1` 从能力地图和蓝图的编号生成，只回答需求可能使用哪些数据库持久化边界。它不是代码实施矩阵，不声明 Owner、Profile、Phase、具体接口、代码结构或逐条自动化测试绑定。')
 [void]$traceability.AppendLine()
-[void]$traceability.AppendLine("- 精确编号总数：$($requirementIds.Count)")
+[void]$traceability.AppendLine("- 数据库覆盖编号总数：$($requirementIds.Count)")
 foreach ($kindGroup in ($requirementIds | Group-Object { ($_ -split '-')[0] } | Sort-Object Name)) {
     [void]$traceability.AppendLine("- $($kindGroup.Name)：$($kindGroup.Count)")
 }
 [void]$traceability.AppendLine()
-[void]$traceability.AppendLine('存储列表示该编号可使用的领域存储边界，不表示每项能力都必须新建表；纯计算、协议和状态转换继续由代码实现。')
+[void]$traceability.AppendLine('持久化边界列表示该编号可能使用的数据库事实，不表示每项能力都必须新建表。状态机、跨对象校验、权限、风险、审批、协议和流程属于非数据库职责，进入编码阶段后在单独的代码实施文档中展开。')
 [void]$traceability.AppendLine()
-[void]$traceability.AppendLine('| 精确编号 | 首次来源 | 领域 | 存储边界 | .NET 职责 | 验证与证据 |')
+[void]$traceability.AppendLine('| 编号 | 首次来源文档 | 领域 | 数据库持久化边界 | 非数据库职责提示 | 数据库验证与后续验收提示 |')
 [void]$traceability.AppendLine('|---|---|---|---|---|---|')
 foreach ($id in $requirementIds) {
     $parts = $id -split '-'
@@ -276,26 +276,26 @@ foreach ($id in $requirementIds) {
     $storage = if ($kind -eq 'SLO') { '`configuration_versions` 的 `SLO_BASELINE`，运行指标进入监控系统' }
         elseif ($kind -in @('TTL','TERM')) { '`configuration_versions` 的 `DURATION_BASELINE`，对象表保存实际到期时间' }
         else { $domainStorage[$domain] }
-    $codeResponsibility = "$domain 领域负责协议、权限、状态机、风险判断、应用事务和逻辑引用校验；数据库仅保存事实、快照、唯一性与基础约束。"
+    $nonDatabaseResponsibility = "$domain 领域的状态转换、跨对象有效性、权限、风险、审批、协议和流程属于非数据库职责；具体实现另行成册。"
     $domainAtEvidence = if ($atIdsByDomain.ContainsKey($domain)) {
         (($atIdsByDomain[$domain] | Sort-Object | ForEach-Object { "``$_``" }) -join '、')
     } else { 'SQL Verification 001–008 与领域负向测试' }
-    $evidence = if ($kind -eq 'AT') { "``$id`` 自动化验收 + SQL Verification + 审计证据" }
-        elseif ($kind -eq 'SLO') { "``$id`` 指标看板、压测或演练证据；$domainAtEvidence" }
-        else { "$domainAtEvidence；SQL Verification 与审计证据" }
-    [void]$traceability.AppendLine("| ``$id`` | ``$($requirementIndex[$id])`` | ``$domain`` | $storage | $codeResponsibility | $evidence |")
+    $evidence = if ($kind -eq 'AT') { "``$id`` 可能包含数据库契约、权限、并发或审计验证；具体自动化实现以后续实施矩阵为准" }
+        elseif ($kind -eq 'SLO') { "``$id`` 主要由指标、压测或演练验证；数据库只保存基线和必要证据；相关领域验收提示（非逐条绑定）：$domainAtEvidence" }
+        else { "SQL Verification 验证持久化边界；相关领域验收提示（非逐条绑定）：$domainAtEvidence" }
+    [void]$traceability.AppendLine("| ``$id`` | ``$($requirementIndex[$id])`` | ``$domain`` | $storage | $nonDatabaseResponsibility | $evidence |")
 }
 
 $relationDocument = [System.Text.StringBuilder]::new()
-[void]$relationDocument.AppendLine('# 逻辑关系与代码校验清单')
+[void]$relationDocument.AppendLine('# 逻辑关系与非数据库校验清单')
 [void]$relationDocument.AppendLine()
-[void]$relationDocument.AppendLine('> 本文件由 Migration 的 Column Comment 生成。在不创建 Foreign Key 的前提下，所有直接引用必须通过仓储/领域服务校验；多态引用由类型注册表解析。')
+[void]$relationDocument.AppendLine('> 本文件由 Migration 的 Column Comment 生成，只登记数据库可识别的逻辑引用。在不创建 Foreign Key 的前提下，目标存在性、作用域、生命周期、删除行为和多态解析属于非数据库职责，具体实现以后续代码实施文档为准。')
 [void]$relationDocument.AppendLine()
 [void]$relationDocument.AppendLine("- 逻辑引用字段：$($logicalRelations.Count)")
 [void]$relationDocument.AppendLine("- 可执行 SQL 孤儿检查：$($directRelations.Count)")
 [void]$relationDocument.AppendLine("- 多态或代码解析引用：$($polymorphicRelations.Count)")
 [void]$relationDocument.AppendLine()
-[void]$relationDocument.AppendLine('| 来源字段 | 类型 | 目标 | 代码校验 | Comment |')
+[void]$relationDocument.AppendLine('| 来源字段 | 类型 | 目标 | 非数据库校验提示 | Comment |')
 [void]$relationDocument.AppendLine('|---|---|---|---|---|')
 foreach ($relation in $logicalRelations) {
     $target = if ($relation.Kind -eq 'POLYMORPHIC') { '由类型字段或代码注册表解析' } else { "``iam.$($relation.TargetTable).$($relation.TargetColumn)``" }
@@ -352,7 +352,7 @@ $report = [System.Text.StringBuilder]::new()
 [void]$report.AppendLine("| View / Materialized View 源码 | PASS：$viewMatches |")
 [void]$report.AppendLine("| Seed 禁止业务数据目标 | PASS：$forbiddenSeedTargets |")
 [void]$report.AppendLine("| Seed 敏感原文 JSON Key | PASS：$rawSecretSeedKeys |")
-[void]$report.AppendLine("| 精确需求编号 | PASS：$($requirementIds.Count) |")
+[void]$report.AppendLine("| 数据库需求覆盖编号 | PASS：$($requirementIds.Count)（仅编号与持久化边界索引，不代表代码实施或逐条测试覆盖） |")
 [void]$report.AppendLine("| 逻辑引用字段 | PASS：$($logicalRelations.Count) |")
 [void]$report.AppendLine("| 可执行孤儿检查 | PASS：$($directRelations.Count) |")
 [void]$report.AppendLine("| 多态代码校验关系 | PASS：$($polymorphicRelations.Count) |")
@@ -368,4 +368,4 @@ $utf8 = [System.Text.UTF8Encoding]::new($false)
 [System.IO.File]::WriteAllText($logicalRelationPath, $relationDocument.ToString(), $utf8)
 [System.IO.File]::WriteAllText((Join-Path $verificationPath '006_logical_relation_orphan_check.sql'), $orphanCheck.ToString(), $utf8)
 
-Write-Output "Generated: $($tables.Count) tables; $($indexMatches.Count) indexes; $($constraintMatches.Count) constraints; $($requirementIds.Count) exact requirement IDs; $($directRelations.Count) executable relations."
+Write-Output "Generated: $($tables.Count) tables; $($indexMatches.Count) indexes; $($constraintMatches.Count) constraints; $($requirementIds.Count) database coverage IDs; $($directRelations.Count) executable relations."

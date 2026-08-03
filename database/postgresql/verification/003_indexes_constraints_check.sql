@@ -32,7 +32,8 @@ BEGIN
         ('uq_idempotency_caller_key'),('uq_outbox_event_id'),('uq_inbox_consumer_event'),
         ('uq_operations_caller_key'),('uq_approval_cases_execution_id'),
         ('uq_configuration_version'),('uq_policy_versions'),('uq_event_schema_version'),
-        ('uq_legacy_external_mapping'),('uq_refresh_token_hash'),('uq_authorization_codes_hash')
+        ('uq_legacy_external_mapping'),('uq_refresh_token_hash'),('uq_authorization_codes_hash'),
+        ('uq_machine_credential_replacement'),('ck_authorization_grants_granted_at')
       ) AS required(constraint_name)
      WHERE NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conname = required.constraint_name);
 

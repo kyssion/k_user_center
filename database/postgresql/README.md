@@ -1,6 +1,6 @@
 # PostgreSQL 数据库实施说明
 
-本目录是 `docs/数据库设计总纲.md` 的可执行实现。数据库只承担持久化、基础结构约束、唯一性、原子并发、技术时间、索引、分区和访问控制；状态机、逻辑引用校验、租户隔离、权限、风险、审批、加密及流程编排由 .NET 代码承担。
+本目录是 `docs/数据库设计总纲.md` 的可执行实现。数据库只承担持久化、基础结构约束、唯一性、原子并发、技术时间、索引、分区和访问控制；状态机、逻辑引用校验、租户隔离、权限、风险、审批、加密及流程编排属于非数据库职责，具体实现以后续单独生成的代码实施文档为准。
 
 ## 执行顺序
 
@@ -20,6 +20,7 @@
 - UUID 由应用生成，推荐 UUIDv7；数据库不替应用推导业务标识。
 - Seed 使用稳定业务键和内容摘要保证幂等；同键内容不一致时执行失败，禁止静默覆盖或忽略漂移。
 - `configuration_versions`、事件 Schema 和消息模板 Seed 默认 `DRAFT`，不得作为已发布配置直接读取。
+- 运行时登录身份按最小职责组合组角色：普通持久化使用 `iam_app_rw`，队列和投递 Worker 使用 `iam_ops`，只有确需读取密文的专用进程叠加 `iam_sensitive_rw`；运行时禁止继承 `iam_owner` 或 `iam_migrator`。
 
 ## 本地执行示例
 
@@ -32,4 +33,4 @@ Get-ChildItem database/postgresql/migrations/*.sql | Sort-Object Name | ForEach-
 
 脚本使用 `\set ON_ERROR_STOP on`，任一语句失败即停止。角色脚本需要具备创建角色和授权的管理员权限。
 
-执行完全部 SQL 后运行 `verification/Generate-DatabaseDocs.ps1`，生成精确需求追踪、完整逻辑关系清单、孤儿检查 SQL 和数据字典。
+执行完全部 SQL 后运行 `verification/Generate-DatabaseDocs.ps1`，生成数据库需求覆盖索引、逻辑关系清单、孤儿检查 SQL 和数据字典。数据库需求覆盖索引只证明持久化边界覆盖，不代替后续代码实施与验收矩阵。

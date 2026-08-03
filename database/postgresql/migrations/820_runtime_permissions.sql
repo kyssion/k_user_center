@@ -7,7 +7,20 @@ REVOKE ALL ON ALL SEQUENCES IN SCHEMA iam FROM PUBLIC;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA iam TO iam_app_rw;
 GRANT SELECT ON ALL TABLES IN SCHEMA iam TO iam_app_ro;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA iam TO iam_ops;
+
+-- 运维角色只处理运行队列、投递、同步和迁移状态，不得修改用户、租户、权限、策略、审批或配置等权威业务表。
+GRANT SELECT ON iam.event_schema_versions, iam.webhook_signing_keys,
+    iam.message_providers, iam.message_template_versions, iam.legacy_systems
+TO iam_ops;
+GRANT SELECT, INSERT, UPDATE, DELETE ON iam.operations, iam.operation_steps,
+    iam.outbox_events, iam.inbox_messages,
+    iam.directory_sync_cursors, iam.directory_sync_batches,
+    iam.migration_batches, iam.migration_items,
+    iam.webhook_deliveries, iam.event_replay_requests, iam.consumer_checkpoints,
+    iam.message_requests
+TO iam_ops;
+GRANT SELECT, INSERT ON iam.webhook_delivery_attempts, iam.message_delivery_attempts, iam.migration_change_logs
+TO iam_ops;
 
 -- 敏感表从普通角色收回，再授予专用角色。
 REVOKE ALL ON iam.credential_materials, iam.password_history, iam.machine_credentials FROM iam_app_rw, iam_app_ro, iam_ops;
@@ -54,7 +67,7 @@ GRANT SELECT ON iam.audit_events TO iam_audit_reader;
 REVOKE UPDATE, DELETE ON iam.authentication_attempts, iam.authorization_decisions, iam.risk_signals,
     iam.workload_attestations, iam.webhook_delivery_attempts, iam.message_delivery_attempts,
     iam.agreement_acceptances, iam.approval_actions, iam.deletion_proofs, iam.migration_change_logs
-FROM iam_app_rw;
+FROM iam_app_rw, iam_ops;
 
 -- ALL TABLES 包含当前分区，必须同步收回直接访问分区的越权权限。
 DO $partition_permissions$
@@ -84,7 +97,7 @@ BEGIN
             'workload_attestations', 'webhook_delivery_attempts',
             'message_delivery_attempts', 'migration_change_logs'
         ) THEN
-            EXECUTE format('REVOKE UPDATE, DELETE ON TABLE %I.%I FROM iam_app_rw', child.schema_name, child.table_name);
+            EXECUTE format('REVOKE UPDATE, DELETE ON TABLE %I.%I FROM iam_app_rw, iam_ops', child.schema_name, child.table_name);
         END IF;
     END LOOP;
 END

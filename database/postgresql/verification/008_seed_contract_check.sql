@@ -11,6 +11,7 @@ DECLARE
     permission_count integer;
     template_count integer;
     event_schema_count integer;
+    missing_event_types text;
     invalid_event_schemas text;
 BEGIN
     SELECT string_agg(required.code, ', ' ORDER BY required.code)
@@ -208,6 +209,22 @@ BEGIN
       FROM iam.event_schema_versions
      WHERE id::text LIKE '50000000-%';
 
+    SELECT string_agg(required.event_type, ', ' ORDER BY required.event_type)
+      INTO missing_event_types
+      FROM (VALUES
+        ('user.created'),('user.lifecycle.changed'),('user.security_state.changed'),
+        ('identity.bound'),('identity.unbound'),('identifier.verified'),('identifier.reassigned'),
+        ('user.merge.started'),('user.merge.completed'),('user.merge.failed'),('user.anonymized'),
+        ('risk.detected'),('risk.disposition.changed'),('authenticator.compromised'),
+        ('token.family.compromised'),('assurance.changed'),('client.compromised'),('session.revoked')
+      ) AS required(event_type)
+     WHERE NOT EXISTS (
+        SELECT 1
+          FROM iam.event_schema_versions e
+         WHERE e.event_type = required.event_type
+           AND e.schema_version = 1
+     );
+
     SELECT string_agg(event_type, ', ' ORDER BY event_type)
       INTO invalid_event_schemas
       FROM iam.event_schema_versions e
@@ -229,11 +246,11 @@ BEGIN
 
     IF missing_profiles IS NOT NULL OR invalid_profiles IS NOT NULL OR missing_slos IS NOT NULL OR missing_durations IS NOT NULL
        OR invalid_baseline OR invalid_seed_state IS NOT NULL OR permission_count < 48 OR template_count < 13
-       OR event_schema_count < 18 OR invalid_event_schemas IS NOT NULL THEN
-        RAISE EXCEPTION 'Seed 契约失败：missing_profiles=%, invalid_profiles=%, missing_slos=%, missing_durations=%, invalid_baseline=%, invalid_state=%, permissions=%, templates=%, event_schemas=%, invalid_event_schemas=%',
+       OR event_schema_count < 28 OR missing_event_types IS NOT NULL OR invalid_event_schemas IS NOT NULL THEN
+        RAISE EXCEPTION 'Seed 契约失败：missing_profiles=%, invalid_profiles=%, missing_slos=%, missing_durations=%, invalid_baseline=%, invalid_state=%, permissions=%, templates=%, event_schemas=%, missing_event_types=%, invalid_event_schemas=%',
             coalesce(missing_profiles, '<none>'), coalesce(invalid_profiles, '<none>'), coalesce(missing_slos, '<none>'),
             coalesce(missing_durations, '<none>'), invalid_baseline, coalesce(invalid_seed_state, '<none>'),
-            permission_count, template_count, event_schema_count, coalesce(invalid_event_schemas, '<none>');
+            permission_count, template_count, event_schema_count, coalesce(missing_event_types, '<none>'), coalesce(invalid_event_schemas, '<none>');
     END IF;
 END
 $seed_contract$;

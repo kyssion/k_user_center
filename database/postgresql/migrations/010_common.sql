@@ -65,7 +65,7 @@ CREATE TABLE iam.operations (
     CONSTRAINT ck_operations_version CHECK (row_version >= 0),
     CONSTRAINT ck_operations_expiry CHECK (expires_at IS NULL OR expires_at > created_at)
 );
-COMMENT ON TABLE iam.operations IS '跨域或异步操作的持久化载体；步骤编排、补偿、不可逆边界与状态机由 .NET OPS 领域实现。';
+COMMENT ON TABLE iam.operations IS '跨域或异步操作的持久化载体；数据库只保存权威状态、检查点、结果和证据，步骤编排、补偿、不可逆边界判断与状态机属于非数据库职责。';
 COMMENT ON COLUMN iam.operations.id IS '应用生成的 Operation UUIDv7，可作为 API 查询标识。';
 COMMENT ON COLUMN iam.operations.operation_type IS '操作类型代码；代码注册表维护定义，不使用数据库状态字典。';
 COMMENT ON COLUMN iam.operations.state IS '操作状态；合法转换由 OPS 状态机维护。';

@@ -48,6 +48,7 @@ CREATE TABLE iam.machine_credentials (
     fingerprint varchar(256) NOT NULL,
     key_id uuid,
     certificate_id uuid,
+    replaces_credential_id uuid,
     secret_hash varchar(256),
     state varchar(40) NOT NULL,
     valid_from timestamptz NOT NULL,
@@ -57,11 +58,13 @@ CREATE TABLE iam.machine_credentials (
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT uq_machine_credential_fingerprint UNIQUE (credential_type, fingerprint),
+    CONSTRAINT uq_machine_credential_replacement UNIQUE (replaces_credential_id),
     CONSTRAINT ck_machine_credential_material CHECK (key_id IS NOT NULL OR certificate_id IS NOT NULL OR secret_hash IS NOT NULL),
+    CONSTRAINT ck_machine_credential_not_self_replacement CHECK (replaces_credential_id IS NULL OR replaces_credential_id <> id),
     CONSTRAINT ck_machine_credential_validity CHECK (valid_until > valid_from),
     CONSTRAINT ck_machine_credential_version CHECK (row_version >= 0)
 );
-COMMENT ON TABLE iam.machine_credentials IS '机器凭证元数据；私钥和 Secret 原文不落库，轮换、重叠窗口和认证由 MACHINE 代码处理。';
+COMMENT ON TABLE iam.machine_credentials IS '机器凭证元数据；私钥和 Secret 原文不落库，数据库保存唯一替代链，轮换、重叠窗口和认证判断属于非数据库职责。';
 COMMENT ON COLUMN iam.machine_credentials.id IS '应用生成的机器凭证 UUIDv7。';
 COMMENT ON COLUMN iam.machine_credentials.machine_principal_id IS '逻辑引用 iam.machine_principals.id。';
 COMMENT ON COLUMN iam.machine_credentials.client_id IS '可空；逻辑引用 iam.oauth_clients.id。';
@@ -69,6 +72,7 @@ COMMENT ON COLUMN iam.machine_credentials.credential_type IS '凭证类型，例
 COMMENT ON COLUMN iam.machine_credentials.fingerprint IS '凭证公有指纹或 Secret 安全摘要。';
 COMMENT ON COLUMN iam.machine_credentials.key_id IS '可空；逻辑引用 iam.cryptographic_keys.id。';
 COMMENT ON COLUMN iam.machine_credentials.certificate_id IS '可空；逻辑引用 iam.certificates.id。';
+COMMENT ON COLUMN iam.machine_credentials.replaces_credential_id IS '可空；逻辑引用 iam.machine_credentials.id；记录本凭证唯一替代的旧凭证，数据库不判断旧凭证状态和轮换窗口。';
 COMMENT ON COLUMN iam.machine_credentials.secret_hash IS '可空；Client Secret 自适应或 HMAC 摘要，不保存原文。';
 COMMENT ON COLUMN iam.machine_credentials.state IS '凭证状态。';
 COMMENT ON COLUMN iam.machine_credentials.valid_from IS '凭证生效时间。';

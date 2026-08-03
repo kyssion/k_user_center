@@ -25,11 +25,26 @@ BEGIN
     IF has_table_privilege('iam_app_rw', 'iam.credential_materials', 'SELECT') THEN
         errors := array_append(errors, 'iam_app_rw 可读凭证材料');
     END IF;
+    IF has_table_privilege('iam_ops', 'iam.global_users', 'INSERT')
+       OR has_table_privilege('iam_ops', 'iam.global_users', 'UPDATE')
+       OR has_table_privilege('iam_ops', 'iam.global_users', 'DELETE')
+       OR has_table_privilege('iam_ops', 'iam.roles', 'UPDATE')
+       OR has_table_privilege('iam_ops', 'iam.policy_versions', 'UPDATE')
+       OR has_table_privilege('iam_ops', 'iam.configuration_versions', 'UPDATE')
+       OR has_table_privilege('iam_ops', 'iam.approval_cases', 'UPDATE') THEN
+        errors := array_append(errors, 'iam_ops 可修改非运维权威业务表');
+    END IF;
+    IF has_table_privilege('iam_ops', 'iam.authorization_decisions', 'UPDATE')
+       OR has_table_privilege('iam_ops', 'iam.authorization_decisions', 'DELETE')
+       OR has_table_privilege('iam_ops', 'iam.webhook_delivery_attempts', 'UPDATE')
+       OR has_table_privilege('iam_ops', 'iam.message_delivery_attempts', 'DELETE')
+       OR has_table_privilege('iam_ops', 'iam.migration_change_logs', 'UPDATE') THEN
+        errors := array_append(errors, 'iam_ops 可改写追加型证据');
+    END IF;
     IF array_length(errors, 1) IS NOT NULL THEN
         RAISE EXCEPTION '权限门禁失败：%', array_to_string(errors, '; ');
     END IF;
 END
 $permissions_check$;
 
-SELECT 'PASS: 运行时角色满足敏感数据和追加写最小权限' AS result;
-
+SELECT 'PASS: 运行时角色满足敏感数据、运维范围和追加写最小权限' AS result;

@@ -168,7 +168,8 @@ CREATE TABLE iam.authorization_grants (
     scope_snapshot text[] NOT NULL,
     consent_id uuid,
     state varchar(40) NOT NULL,
-    granted_at timestamptz NOT NULL,
+    requested_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    granted_at timestamptz,
     expires_at timestamptz,
     revoked_at timestamptz,
     grant_version bigint NOT NULL DEFAULT 0,
@@ -176,9 +177,11 @@ CREATE TABLE iam.authorization_grants (
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT ck_authorization_grants_versions CHECK (grant_version >= 0 AND row_version >= 0),
-    CONSTRAINT ck_authorization_grants_expiry CHECK (expires_at IS NULL OR expires_at > granted_at)
+    CONSTRAINT ck_authorization_grants_granted_at CHECK (granted_at IS NULL OR granted_at >= requested_at),
+    CONSTRAINT ck_authorization_grants_expiry CHECK (expires_at IS NULL OR expires_at > coalesce(granted_at, requested_at)),
+    CONSTRAINT ck_authorization_grants_revoked_at CHECK (revoked_at IS NULL OR revoked_at >= coalesce(granted_at, requested_at))
 );
-COMMENT ON TABLE iam.authorization_grants IS '用户对 Client 和资源的授权关系；Scope 收敛、Consent 和撤销由 OAP/AUTHZ 代码处理。';
+COMMENT ON TABLE iam.authorization_grants IS '用户对 Client 和资源的授权请求与生效关系；保存 PENDING、ACTIVE、DENIED、REVOKED、EXPIRED 所需时间事实，状态转换、Scope 收敛、Consent 和撤销判断不在数据库中实现。';
 COMMENT ON COLUMN iam.authorization_grants.id IS '应用生成的 Grant UUIDv7。';
 COMMENT ON COLUMN iam.authorization_grants.user_id IS '逻辑引用 iam.global_users.id。';
 COMMENT ON COLUMN iam.authorization_grants.client_id IS '逻辑引用 iam.oauth_clients.id。';
@@ -186,9 +189,10 @@ COMMENT ON COLUMN iam.authorization_grants.resource_id IS '可空；逻辑引用
 COMMENT ON COLUMN iam.authorization_grants.tenant_id IS '可空；逻辑引用 iam.tenants.id。';
 COMMENT ON COLUMN iam.authorization_grants.scope_snapshot IS '当前授权 Scope 快照；代码确保不超出 Client 和 Consent 上界。';
 COMMENT ON COLUMN iam.authorization_grants.consent_id IS '可空；逻辑引用 iam.consents.id。';
-COMMENT ON COLUMN iam.authorization_grants.state IS 'Grant 状态；由 OAP 状态机维护。';
-COMMENT ON COLUMN iam.authorization_grants.granted_at IS '授权生效时间。';
-COMMENT ON COLUMN iam.authorization_grants.expires_at IS '可空；授权过期时间。';
+COMMENT ON COLUMN iam.authorization_grants.state IS 'Grant 状态值；数据库只保存事实，不定义状态全集与合法转换。';
+COMMENT ON COLUMN iam.authorization_grants.requested_at IS '授权请求创建时间；PENDING、DENIED 或请求过期状态也必须保留该事实。';
+COMMENT ON COLUMN iam.authorization_grants.granted_at IS '可空；进入 ACTIVE 时的授权生效时间，未生效 Grant 保持为空。';
+COMMENT ON COLUMN iam.authorization_grants.expires_at IS '可空；授权请求或已生效 Grant 的过期时间。';
 COMMENT ON COLUMN iam.authorization_grants.revoked_at IS '可空；撤销时间。';
 COMMENT ON COLUMN iam.authorization_grants.grant_version IS 'Grant 安全版本，用于 Token 失效判断。';
 COMMENT ON COLUMN iam.authorization_grants.created_at IS '数据库插入时间。';
