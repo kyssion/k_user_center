@@ -3,6 +3,7 @@
 DO $permissions_check$
 DECLARE
     errors text[] := ARRAY[]::text[];
+    split_privilege_table text;
 BEGIN
     IF has_table_privilege('iam_app_rw', 'iam.audit_events', 'UPDATE') OR has_table_privilege('iam_app_rw', 'iam.audit_events', 'DELETE') THEN
         errors := array_append(errors, 'iam_app_rw 可修改 audit_events');
@@ -25,6 +26,32 @@ BEGIN
     IF has_table_privilege('iam_app_rw', 'iam.credential_materials', 'SELECT') THEN
         errors := array_append(errors, 'iam_app_rw 可读凭证材料');
     END IF;
+    IF NOT has_table_privilege('iam_sensitive_rw', 'iam.credential_materials', 'SELECT')
+       OR NOT has_table_privilege('iam_sensitive_rw', 'iam.credential_materials', 'INSERT')
+       OR NOT has_table_privilege('iam_sensitive_rw', 'iam.credential_materials', 'UPDATE') THEN
+        errors := array_append(errors, 'iam_sensitive_rw 缺少 credential_materials 受控读写权限');
+    END IF;
+    FOREACH split_privilege_table IN ARRAY ARRAY[
+        'recovery_codes', 'auth_challenges', 'authorization_codes',
+        'refresh_token_instances', 'access_token_records'
+    ]
+    LOOP
+        IF has_table_privilege('iam_app_rw', format('iam.%I', split_privilege_table), 'SELECT') THEN
+            errors := array_append(errors, format('iam_app_rw 可读取 %s 敏感摘要', split_privilege_table));
+        END IF;
+        IF NOT has_table_privilege('iam_app_rw', format('iam.%I', split_privilege_table), 'INSERT')
+           OR NOT has_table_privilege('iam_app_rw', format('iam.%I', split_privilege_table), 'UPDATE') THEN
+            errors := array_append(errors, format('iam_app_rw 缺少 %s INSERT/UPDATE', split_privilege_table));
+        END IF;
+        IF NOT has_table_privilege('iam_sensitive_rw', format('iam.%I', split_privilege_table), 'SELECT') THEN
+            errors := array_append(errors, format('iam_sensitive_rw 缺少 %s SELECT', split_privilege_table));
+        END IF;
+        IF has_table_privilege('iam_sensitive_rw', format('iam.%I', split_privilege_table), 'INSERT')
+           OR has_table_privilege('iam_sensitive_rw', format('iam.%I', split_privilege_table), 'UPDATE')
+           OR has_table_privilege('iam_sensitive_rw', format('iam.%I', split_privilege_table), 'DELETE') THEN
+            errors := array_append(errors, format('iam_sensitive_rw 可单独改写 %s，破坏组合角色边界', split_privilege_table));
+        END IF;
+    END LOOP;
     IF has_table_privilege('iam_ops', 'iam.global_users', 'INSERT')
        OR has_table_privilege('iam_ops', 'iam.global_users', 'UPDATE')
        OR has_table_privilege('iam_ops', 'iam.global_users', 'DELETE')

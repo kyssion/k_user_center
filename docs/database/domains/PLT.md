@@ -1,7 +1,8 @@
 # PLT：平台接入与运行基座
 
-- 存储：`business_lines`、`applications`、`oauth_clients`、`api_resources`、`usage_records`、`resource_quotas`、配置发布表。
-- 聚合：`BusinessLine`、`Application`、Client 上线认证 `Operation`。
+- 持久化范围：`business_lines`、`applications`、`oauth_clients`、`api_resources`、`usage_records`、`resource_quotas`、配置发布表。
+- 业务模型边界：`Application`、Client 上线认证 `Operation`、配额和使用计量。
+- 权威边界：PLT 持有 `applications`、`resource_quotas` 和 `usage_records`；`business_lines` 由 TENANT 持有，Client/API Resource 由 OAP 持有，配置版本/发布由 CTRL 持有，PLT 只编排接入和消费发布结果。
 - 业务模型要求：持久化模型必须保存所有者、环境、Security Profile、接入结果、配额和发布证据；容量、备份恢复与发布门禁的执行属于非数据库职责。
 - 禁止：Seed 创建生产 Client/管理员/秘密；业务系统直接获得 IAM 数据库账号。
 - 事件：应用/Client 状态、配置发布、配额告警和接入认证结果。

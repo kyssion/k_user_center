@@ -87,7 +87,7 @@ COMMENT ON COLUMN iam.oauth_clients.client_id IS '协议公开 Client ID，全�
 COMMENT ON COLUMN iam.oauth_clients.client_type IS 'Client 类型，例如 PUBLIC、CONFIDENTIAL。';
 COMMENT ON COLUMN iam.oauth_clients.owner_type IS 'Client 所有者类型。';
 COMMENT ON COLUMN iam.oauth_clients.owner_id IS 'Client 所有者逻辑 ID。';
-COMMENT ON COLUMN iam.oauth_clients.state IS 'Client 状态；由 OAP/CTRL 代码维护。';
+COMMENT ON COLUMN iam.oauth_clients.state IS 'Client 状态；生命周期由 OAP 领域持有，CTRL 只提供配置审批事实。';
 COMMENT ON COLUMN iam.oauth_clients.client_security_epoch IS 'Client 安全水位；密钥或安全配置变化时由代码递增。';
 COMMENT ON COLUMN iam.oauth_clients.active_configuration_id IS '可空；逻辑引用 iam.configuration_versions.id。';
 COMMENT ON COLUMN iam.oauth_clients.configuration IS '非秘密协议配置快照；Secret 和私钥不得写入。';
@@ -118,7 +118,7 @@ COMMENT ON COLUMN iam.api_resources.audience IS 'Token Audience 稳定值，全�
 COMMENT ON COLUMN iam.api_resources.name IS '资源展示名称。';
 COMMENT ON COLUMN iam.api_resources.owner_type IS '资源所有者类型。';
 COMMENT ON COLUMN iam.api_resources.owner_id IS '资源所有者逻辑 ID。';
-COMMENT ON COLUMN iam.api_resources.state IS '资源状态；由 API/OAP 代码维护。';
+COMMENT ON COLUMN iam.api_resources.state IS '资源状态；生命周期由 OAP 领域持有，API 领域只消费资源登记事实。';
 COMMENT ON COLUMN iam.api_resources.token_profile IS '引用的 Token Profile 代码。';
 COMMENT ON COLUMN iam.api_resources.configuration IS '资源验证配置，不得含私钥。';
 COMMENT ON COLUMN iam.api_resources.created_at IS '数据库插入时间。';
@@ -140,7 +140,7 @@ CREATE TABLE iam.oauth_scopes (
     CONSTRAINT uq_oauth_scopes_code UNIQUE (scope_code),
     CONSTRAINT ck_oauth_scopes_version CHECK (row_version >= 0)
 );
-COMMENT ON TABLE iam.oauth_scopes IS 'OAuth Scope 稳定目录；授权、同意和最小权限判断由 OAP/AUTHZ 代码完成。';
+COMMENT ON TABLE iam.oauth_scopes IS 'OAuth Scope 稳定目录；目录生命周期由 OAP 领域持有，AUTHZ 使用 Scope 执行授权判断。';
 COMMENT ON COLUMN iam.oauth_scopes.id IS '应用生成的 Scope UUIDv7。';
 COMMENT ON COLUMN iam.oauth_scopes.resource_id IS '可空；逻辑引用 iam.api_resources.id，跨资源标准 Scope 可为空。';
 COMMENT ON COLUMN iam.oauth_scopes.scope_code IS '协议 Scope 稳定代码，全局唯一。';
@@ -378,7 +378,7 @@ CREATE TABLE iam.usage_records (
     CONSTRAINT ck_usage_quantity CHECK (quantity >= 0),
     CONSTRAINT ck_usage_window CHECK (window_end > window_start)
 );
-COMMENT ON TABLE iam.usage_records IS 'API、Token、消息等计量事实；聚合、计费和配额判断由 API/PLT 代码执行。';
+COMMENT ON TABLE iam.usage_records IS 'API、Token、消息等计量事实；模型与历史记录由 PLT 领域持有，各使用域按幂等计量契约提交事实。';
 COMMENT ON COLUMN iam.usage_records.id IS '应用生成的计量 UUIDv7。';
 COMMENT ON COLUMN iam.usage_records.business_line_id IS '可空；逻辑引用 iam.business_lines.id。';
 COMMENT ON COLUMN iam.usage_records.tenant_id IS '可空；逻辑引用 iam.tenants.id。';
@@ -410,7 +410,7 @@ CREATE TABLE iam.resource_quotas (
     CONSTRAINT ck_resource_quota_version CHECK (row_version >= 0),
     CONSTRAINT ck_resource_quota_expiry CHECK (expires_at IS NULL OR expires_at > effective_at)
 );
-COMMENT ON TABLE iam.resource_quotas IS '作用域计量配额事实；窗口计算、超额动作和降级由 API/PLT 代码执行。';
+COMMENT ON TABLE iam.resource_quotas IS '作用域计量配额事实；模型与版本由 PLT 领域持有，窗口计算、超额动作和降级属于非数据库职责。';
 COMMENT ON COLUMN iam.resource_quotas.id IS '应用生成的配额 UUIDv7。';
 COMMENT ON COLUMN iam.resource_quotas.scope_type IS '配额作用域类型。';
 COMMENT ON COLUMN iam.resource_quotas.scope_id IS '按 scope_type 逻辑引用作用域对象。';

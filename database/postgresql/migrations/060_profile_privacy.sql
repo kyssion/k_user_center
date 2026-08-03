@@ -80,7 +80,7 @@ CREATE TABLE iam.identity_assurance_assertions (
     CONSTRAINT ck_assurance_expiry CHECK (expires_at IS NULL OR expires_at > verified_at),
     CONSTRAINT ck_assurance_version CHECK (row_version >= 0)
 );
-COMMENT ON TABLE iam.identity_assurance_assertions IS '身份核验断言及证据摘要；等级映射、复核和撤销由 ID/PROFILE 代码处理。';
+COMMENT ON TABLE iam.identity_assurance_assertions IS '身份核验断言及证据摘要；断言生命周期与解释由 PROFILE 领域维护，ASR 使用断言计算保证等级。';
 COMMENT ON COLUMN iam.identity_assurance_assertions.id IS '应用生成的断言 UUIDv7。';
 COMMENT ON COLUMN iam.identity_assurance_assertions.user_id IS '逻辑引用 iam.global_users.id。';
 COMMENT ON COLUMN iam.identity_assurance_assertions.ial IS '身份保证等级快照。';

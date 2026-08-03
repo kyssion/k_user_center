@@ -1,7 +1,8 @@
 # OBS：审计、可观测性与 SLO
 
-- 存储：`audit_events`、`usage_records`、各类追加事实表，以及 `SLO_BASELINE` 配置。
-- 聚合：审计为不可变事件；指标、日志和 Trace 主要在可观测性设施，不把时序平台复制成业务表。
+- 持久化范围：`audit_events`、`usage_records`、各类追加事实表，以及 `SLO_BASELINE` 配置。
+- 业务模型边界：审计为不可变事件；指标、日志和 Trace 主要在可观测性设施，不把时序平台复制成业务表。
+- 权威边界：OBS 持有 `audit_events` 的 Schema、权限、分区和留存契约；各领域只可追加自身审计事实。`usage_records` 由 PLT 持有，OBS 只读取、聚合和对账，不改写历史用量。
 - 业务模型要求：数据库保存审计和稳定证据；结构化日志、Trace 传播、审计失败关闭、敏感数据扫描、SLO/错误预算和告警路由属于非数据库职责，但所需对象引用、原因码和时间必须可持久化。
 - 权限：审计 Writer 仅 INSERT，Reader 仅 SELECT，普通应用不可更新或删除。
 - 事件：安全告警和运维事件必须引用稳定原因码和 Trace，不含密码/验证码/Token。

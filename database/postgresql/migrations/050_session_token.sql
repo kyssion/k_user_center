@@ -346,7 +346,7 @@ CREATE TABLE iam.revocation_entries (
     CONSTRAINT ck_revocation_watermark CHECK (security_watermark IS NULL OR security_watermark >= 0),
     CONSTRAINT ck_revocation_expiry CHECK (expires_at IS NULL OR expires_at > effective_at)
 );
-COMMENT ON TABLE iam.revocation_entries IS '会话、Token、Grant、主体或 Key 的撤销事实和 Denylist；匹配及传播策略由 SESSION/OAP 代码执行。';
+COMMENT ON TABLE iam.revocation_entries IS '会话、Token、Grant、主体或 Key 的统一撤销事实和 Denylist；SESSION 持有模型，其他领域提交撤销原因并消费水位。';
 COMMENT ON COLUMN iam.revocation_entries.id IS '应用生成的撤销记录 UUIDv7。';
 COMMENT ON COLUMN iam.revocation_entries.target_type IS '撤销目标类型。';
 COMMENT ON COLUMN iam.revocation_entries.target_id IS '目标稳定 ID 或安全编码值；代码按类型解释。';

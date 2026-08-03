@@ -16,11 +16,12 @@
 - 全部业务对象位于 `iam` Schema。
 - 不创建 Foreign Key、业务 Trigger、持久化业务 Routine、PostgreSQL Enum 或业务 View。
 - `*_id` 为逻辑引用，目标、作用域、状态和删除行为由代码校验。
+- 每张逻辑表必须映射到一个主要业务模型和权威域；多领域复用遵守 `docs/database/业务模型与持久化边界清单.md` 的共享写入边界，不得形成影子状态或未声明双写。
 - `created_at`、`recorded_at` 使用数据库默认时间；更新时应用必须显式设置 `updated_at = CURRENT_TIMESTAMP`。
 - UUID 由应用生成，推荐 UUIDv7；数据库不替应用推导业务标识。
 - Seed 使用稳定业务键和内容摘要保证幂等；同键内容不一致时执行失败，禁止静默覆盖或忽略漂移。
 - `configuration_versions`、事件 Schema 和消息模板 Seed 默认 `DRAFT`，不得作为已发布配置直接读取。
-- 运行时登录身份按最小职责组合组角色：普通持久化使用 `iam_app_rw`，队列和投递 Worker 使用 `iam_ops`，只有确需读取密文的专用进程叠加 `iam_sensitive_rw`；运行时禁止继承 `iam_owner` 或 `iam_migrator`。
+- 运行时登录身份按最小职责组合组角色：普通领域写入使用 `iam_app_rw + iam_audit_writer`；AUTH/OAP 对 Challenge、恢复码、授权码和 Token 元数据执行读改写时使用 `iam_app_rw + iam_sensitive_rw + iam_audit_writer`；队列和投递 Worker 使用 `iam_ops`，只有确需读取密文时才叠加 `iam_sensitive_rw`。部署清单必须显式登记组合，运行时禁止继承 `iam_owner` 或 `iam_migrator`。
 
 ## 本地执行示例
 
@@ -33,4 +34,4 @@ Get-ChildItem database/postgresql/migrations/*.sql | Sort-Object Name | ForEach-
 
 脚本使用 `\set ON_ERROR_STOP on`，任一语句失败即停止。角色脚本需要具备创建角色和授权的管理员权限。
 
-执行完全部 SQL 后运行 `verification/Generate-DatabaseDocs.ps1`，生成数据库需求覆盖索引、逻辑关系清单、孤儿检查 SQL 和数据字典。数据库需求覆盖索引只证明持久化边界覆盖，不代替后续代码实施与验收矩阵。
+执行完全部 SQL 后运行 `verification/Generate-DatabaseDocs.ps1`，生成数据库需求覆盖索引、逻辑关系清单、孤儿检查 SQL 和数据字典，并校验 113/113 逻辑表业务模型映射、113/113 领域持久化范围映射及全部多领域复用表权威映射。数据库需求覆盖索引只证明持久化边界覆盖，不代替蓝图 §18.4 的正式代码实施与验收矩阵。

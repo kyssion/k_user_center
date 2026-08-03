@@ -181,7 +181,7 @@ CREATE TABLE iam.user_identities (
     CONSTRAINT ck_user_identity_target CHECK (identifier_id IS NOT NULL OR external_subject_digest IS NOT NULL),
     CONSTRAINT ck_user_identity_version CHECK (row_version >= 0)
 );
-COMMENT ON TABLE iam.user_identities IS '用户可登录身份，包括本地标识、社交和企业联合身份；链接与防接管规则由 ID/FED 代码执行。';
+COMMENT ON TABLE iam.user_identities IS '用户可登录身份，包括本地标识、社交和企业联合身份；链接生命周期由 ID 领域持有，FED 提供外部身份源事实。';
 COMMENT ON COLUMN iam.user_identities.id IS '应用生成的身份 UUIDv7。';
 COMMENT ON COLUMN iam.user_identities.user_id IS '逻辑引用 iam.global_users.id。';
 COMMENT ON COLUMN iam.user_identities.identity_type IS '身份类型，例如 LOCAL、OIDC、SAML、SOCIAL。';

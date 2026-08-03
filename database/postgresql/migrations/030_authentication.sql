@@ -202,7 +202,7 @@ CREATE TABLE iam.login_transactions (
     CONSTRAINT ck_login_transaction_version CHECK (row_version >= 0),
     CONSTRAINT ck_login_transaction_expiry CHECK (expires_at > created_at)
 );
-COMMENT ON TABLE iam.login_transactions IS 'OIDC/OAuth 登录过程的服务端权威事务；步骤、风险升级、同意与返回校验由 AUTH/OAP 代码处理。';
+COMMENT ON TABLE iam.login_transactions IS 'OIDC/OAuth 登录过程的服务端权威事务；AUTH 持有事务与认证步骤，OAP 使用结果完成协议交互。';
 COMMENT ON COLUMN iam.login_transactions.id IS '应用生成的登录事务 UUIDv7。';
 COMMENT ON COLUMN iam.login_transactions.client_id IS '逻辑引用 iam.oauth_clients.id。';
 COMMENT ON COLUMN iam.login_transactions.tenant_id IS '可空；逻辑引用 iam.tenants.id。';

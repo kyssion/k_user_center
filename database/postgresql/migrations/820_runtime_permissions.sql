@@ -26,9 +26,14 @@ TO iam_ops;
 REVOKE ALL ON iam.credential_materials, iam.password_history, iam.machine_credentials FROM iam_app_rw, iam_app_ro, iam_ops;
 GRANT SELECT, INSERT, UPDATE, DELETE ON iam.credential_materials, iam.password_history, iam.machine_credentials TO iam_sensitive_rw;
 
+-- Token/Challenge 摘要表采用可组合权限：iam_app_rw 负责 INSERT/UPDATE 但不可读取摘要，
+-- iam_sensitive_rw 负责受控 SELECT 但不单独获得写权限；AUTH/OAP 登录身份必须同时继承两者。
 REVOKE SELECT ON iam.recovery_codes, iam.auth_challenges, iam.authorization_codes,
     iam.refresh_token_instances, iam.access_token_records
 FROM iam_app_rw, iam_app_ro, iam_ops;
+REVOKE INSERT, UPDATE, DELETE ON iam.recovery_codes, iam.auth_challenges, iam.authorization_codes,
+    iam.refresh_token_instances, iam.access_token_records
+FROM iam_sensitive_rw;
 GRANT SELECT ON iam.recovery_codes, iam.auth_challenges, iam.authorization_codes,
     iam.refresh_token_instances, iam.access_token_records
 TO iam_sensitive_rw;

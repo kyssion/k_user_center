@@ -7,8 +7,10 @@ $migrationPath = Join-Path $RepositoryRoot 'database/postgresql/migrations'
 $seedPath = Join-Path $RepositoryRoot 'database/postgresql/seeds'
 $verificationPath = Join-Path $RepositoryRoot 'database/postgresql/verification'
 $outputPath = Join-Path $RepositoryRoot 'docs/database/generated'
-$traceabilityPath = Join-Path $RepositoryRoot 'docs/database/需求能力表测试追踪矩阵.md'
-$logicalRelationPath = Join-Path $RepositoryRoot 'docs/database/逻辑关系与代码校验清单.md'
+$traceabilityPath = Join-Path $RepositoryRoot 'docs/database/需求编号与数据库持久化覆盖索引.md'
+$logicalRelationPath = Join-Path $RepositoryRoot 'docs/database/逻辑关系与非数据库校验清单.md'
+$businessModelBoundaryPath = Join-Path $RepositoryRoot 'docs/database/业务模型与持久化边界清单.md'
+$domainDocumentationPath = Join-Path $RepositoryRoot 'docs/database/domains'
 $capabilityMapPath = Join-Path $RepositoryRoot 'docs/能力地图.md'
 $blueprintPath = Join-Path $RepositoryRoot 'docs/统一身份与访问平台建设与验收蓝图.md'
 $domainFiles = Get-ChildItem -LiteralPath $migrationPath -Filter '*.sql' |
@@ -65,6 +67,36 @@ $enumMatches = [regex]::Matches($allSql, '(?i)\bCREATE\s+TYPE\b[^;]*\bAS\s+ENUM\
 $viewMatches = [regex]::Matches($allSql, '(?im)^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:MATERIALIZED\s+)?VIEW\b').Count
 $forbiddenSeedTargets = [regex]::Matches($allSeedSql, '(?im)\bINSERT\s+INTO\s+iam\.(?:global_users|identifiers|identifier_bindings|tenants|organizations|memberships|oauth_clients|machine_credentials|credential_materials)\b').Count
 $rawSecretSeedKeys = [regex]::Matches($allSeedSql, '(?i)"(?:plain_password|verification_code|private_key_value|client_secret_value|totp_secret)"\s*:').Count
+$businessModelBoundaryContent = Get-Content -Raw -LiteralPath $businessModelBoundaryPath
+$businessModelTablePatterns = @([regex]::Matches($businessModelBoundaryContent, '`(?<table>[a-z0-9_*]+)`') | ForEach-Object { $_.Groups['table'].Value } | Sort-Object -Unique)
+$missingBusinessModelMappings = @($tables | Where-Object {
+    $tableName = $_.Name
+    @($businessModelTablePatterns | Where-Object { $tableName -like $_ }).Count -eq 0
+})
+$tableDomainUsage = @{}
+foreach ($table in $tables) {
+    $tableDomainUsage[$table.Name] = [System.Collections.Generic.List[string]]::new()
+}
+foreach ($domainDocument in (Get-ChildItem -LiteralPath $domainDocumentationPath -Filter '*.md')) {
+    $scopeLine = Get-Content -LiteralPath $domainDocument.FullName | Where-Object { $_ -like '- 持久化范围：*' } | Select-Object -First 1
+    if ([string]::IsNullOrWhiteSpace($scopeLine)) { throw "领域文档缺少持久化范围：$($domainDocument.Name)" }
+    $scopePatterns = @([regex]::Matches($scopeLine, '`(?<table>[a-z0-9_*]+)`') | ForEach-Object { $_.Groups['table'].Value })
+    foreach ($table in $tables) {
+        $tableName = $table.Name
+        if (@($scopePatterns | Where-Object { $tableName -like $_ }).Count -gt 0) {
+            $tableDomainUsage[$tableName].Add($domainDocument.BaseName)
+        }
+    }
+}
+$sharedAuthoritySectionMatch = [regex]::Match($businessModelBoundaryContent, '(?ms)^## 4\. 共享表与跨域写入权威\s+(?<section>.*?)(?=^## 5\.)')
+if (-not $sharedAuthoritySectionMatch.Success) { throw '业务模型与持久化边界清单缺少共享表权威章节。' }
+$sharedAuthorityTablePatterns = @([regex]::Matches($sharedAuthoritySectionMatch.Groups['section'].Value, '`(?<table>[a-z0-9_*]+)`') | ForEach-Object { $_.Groups['table'].Value } | Sort-Object -Unique)
+$sharedTables = @($tables | Where-Object { $tableDomainUsage[$_.Name].Count -gt 1 })
+$missingDomainMappings = @($tables | Where-Object { $tableDomainUsage[$_.Name].Count -eq 0 })
+$missingSharedAuthorityMappings = @($sharedTables | Where-Object {
+    $tableName = $_.Name
+    @($sharedAuthorityTablePatterns | Where-Object { $tableName -like $_ }).Count -eq 0
+})
 
 $columnDefinitionLookup = @{}
 $columnSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -129,6 +161,9 @@ $requirementIds = @($requirementIndex.Keys | Sort-Object)
 if ($tables.Count -ne 113) { throw "目标表数量应为 113，实际为 $($tables.Count)。" }
 if ($missingTableComments.Count -gt 0) { throw "缺少表 Comment：$($missingTableComments.Name -join ', ')" }
 if ($missingColumnComments.Count -gt 0) { throw "缺少字段 Comment：$($missingColumnComments -join ', ')" }
+if ($missingBusinessModelMappings.Count -gt 0) { throw "业务模型与持久化边界清单缺少逻辑表映射：$($missingBusinessModelMappings.Name -join ', ')" }
+if ($missingDomainMappings.Count -gt 0) { throw "领域文档持久化范围缺少逻辑表映射：$($missingDomainMappings.Name -join ', ')" }
+if ($missingSharedAuthorityMappings.Count -gt 0) { throw "多领域复用表缺少共享写入权威：$($missingSharedAuthorityMappings.Name -join ', ')" }
 if ($foreignKeyMatches -gt 0 -or $triggerMatches -gt 0 -or $routineMatches -gt 0 -or $enumMatches -gt 0 -or $viewMatches -gt 0) {
     throw "发现禁止对象：FK=$foreignKeyMatches Trigger=$triggerMatches Routine=$routineMatches Enum=$enumMatches View=$viewMatches"
 }
@@ -226,6 +261,10 @@ $requirementDomainOverrides = @{
     'INV-G-011'='CTRL';'INV-G-012'='API';'INV-G-013'='SESSION';'INV-G-014'='SESSION';'INV-G-015'='TENANT';
     'INV-G-016'='AUTH';'INV-G-017'='ASR';'INV-G-018'='ASR'
 }
+$requirementStorageOverrides = @{
+    'CAP-FED-012'='`identity_providers`、`directory_connectors`、`directory_sync_*`、`directory_object_mappings`、`legacy_systems`、`legacy_id_mappings`、`migration_batches`、`migration_items`、`migration_change_logs`'
+    'CAP-FED-013'='`identity_providers`、`user_identities`、`credential_materials`、`password_history`、`legacy_systems`、`legacy_id_mappings`、`migration_batches`、`migration_items`、`migration_change_logs`'
+}
 
 function Resolve-RequirementDomain([string]$Id) {
     if ($requirementDomainOverrides.ContainsKey($Id)) { return $requirementDomainOverrides[$Id] }
@@ -258,7 +297,7 @@ foreach ($atId in ($requirementIds | Where-Object { $_ -like 'AT-*' })) {
 $traceability = [System.Text.StringBuilder]::new()
 [void]$traceability.AppendLine('# 需求编号与数据库持久化覆盖索引')
 [void]$traceability.AppendLine()
-[void]$traceability.AppendLine('> 本文件由 `database/postgresql/verification/Generate-DatabaseDocs.ps1` 从能力地图和蓝图的编号生成，只回答需求可能使用哪些数据库持久化边界。它不是代码实施矩阵，不声明 Owner、Profile、Phase、具体接口、代码结构或逐条自动化测试绑定。')
+[void]$traceability.AppendLine('> 本文件由 `database/postgresql/verification/Generate-DatabaseDocs.ps1` 从能力地图和蓝图的编号生成，只回答需求可能使用哪些数据库持久化边界。它不是蓝图 §18.4 的正式代码实施与验收矩阵，不声明 Owner、Profile、Phase、具体接口、代码结构或逐条自动化测试绑定。')
 [void]$traceability.AppendLine()
 [void]$traceability.AppendLine("- 数据库覆盖编号总数：$($requirementIds.Count)")
 foreach ($kindGroup in ($requirementIds | Group-Object { ($_ -split '-')[0] } | Sort-Object Name)) {
@@ -273,7 +312,8 @@ foreach ($id in $requirementIds) {
     $parts = $id -split '-'
     $kind = $parts[0]
     $domain = Resolve-RequirementDomain $id
-    $storage = if ($kind -eq 'SLO') { '`configuration_versions` 的 `SLO_BASELINE`，运行指标进入监控系统' }
+    $storage = if ($requirementStorageOverrides.ContainsKey($id)) { $requirementStorageOverrides[$id] }
+        elseif ($kind -eq 'SLO') { '`configuration_versions` 的 `SLO_BASELINE`，运行指标进入监控系统' }
         elseif ($kind -in @('TTL','TERM')) { '`configuration_versions` 的 `DURATION_BASELINE`，对象表保存实际到期时间' }
         else { $domainStorage[$domain] }
     $nonDatabaseResponsibility = "$domain 领域的状态转换、跨对象有效性、权限、风险、审批、协议和流程属于非数据库职责；具体实现另行成册。"
@@ -353,6 +393,9 @@ $report = [System.Text.StringBuilder]::new()
 [void]$report.AppendLine("| Seed 禁止业务数据目标 | PASS：$forbiddenSeedTargets |")
 [void]$report.AppendLine("| Seed 敏感原文 JSON Key | PASS：$rawSecretSeedKeys |")
 [void]$report.AppendLine("| 数据库需求覆盖编号 | PASS：$($requirementIds.Count)（仅编号与持久化边界索引，不代表代码实施或逐条测试覆盖） |")
+[void]$report.AppendLine("| 业务模型逻辑表映射 | PASS：$($tables.Count)/113 |")
+[void]$report.AppendLine("| 领域持久化范围映射 | PASS：$($tables.Count)/113 |")
+[void]$report.AppendLine("| 多领域复用表权威映射 | PASS：$($sharedTables.Count)/$($sharedTables.Count) |")
 [void]$report.AppendLine("| 逻辑引用字段 | PASS：$($logicalRelations.Count) |")
 [void]$report.AppendLine("| 可执行孤儿检查 | PASS：$($directRelations.Count) |")
 [void]$report.AppendLine("| 多态代码校验关系 | PASS：$($polymorphicRelations.Count) |")

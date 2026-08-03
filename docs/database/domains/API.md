@@ -1,7 +1,8 @@
 # API：通用 API 契约
 
-- 存储：`idempotency_records`、`operations`、`operation_steps`。
-- 聚合：`IdempotentRequest`、`Operation`。
+- 持久化范围：`idempotency_records`、`operations`、`operation_steps`。
+- 业务模型边界：`IdempotentRequest`、`Operation`。
+- 权威边界：API 持有 `idempotency_records`；`operations + operation_steps` 的模型由 OPS 持有，每个实例由创建它的能力域唯一推进，API 不得形成第二套 Operation 状态。
 - 业务模型要求：持久化模型必须支持统一错误码、`Idempotency-Key`、ETag/CAS、不透明分页、异步 `202 + operation_id`、逐项批量结果和协议错误映射；Operation 创建时固化调用作用域、幂等键、请求摘要、能力编号、Saga 类型与策略版本。
 - 授权：查询、取消、继续和人工接管 Operation 时重新校验 Actor、Subject、Tenant 和能力权限。
 - 事件：Operation 状态变化；不得把内部敏感错误直接进入响应或事件。
