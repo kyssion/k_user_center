@@ -15,7 +15,7 @@
 - 首次分配：插入 `user_subjects`，`current_subject_slot=1`。
 - 轮换事务：
   1. 读取当前行并校验 expected `row_version`。
-  2. 将旧行 `current_subject_slot=NULL`、写入 `retired_at`、递增 `row_version`。
+  2. 将旧行 `current_subject_slot=NULL`、写入 `retired_at`；数据库技术 Trigger 自动递增 `row_version`。
   3. 插入全新 `id/subject_id` 的当前行，禁止更新旧 `subject_id`。
   4. 写 Outbox 和 Audit 后提交。
 - 数据库裁决：同 User/Client 最多一个当前占位；同 Client 下历史 Subject 永久唯一；User/Client 引用存在。
@@ -49,7 +49,7 @@
 
 - 前置：完成认证或恢复授权；算法、参数和材料类型通过 Allowlist；秘密只以哈希、密文或公钥落库。
 - 事务：插入 `authenticators` 与新的 `credential_materials` 版本；旧材料只更新 `retired_at`，不得改写秘密、算法或公钥；写 Outbox/Audit。
-- Passkey 使用计数：仅 CAS 更新 `usage_counter` 和 `row_version`，发现倒退或异常由 AUTH/RISK 代码判断。
+- Passkey 使用计数：仅以 expected `row_version` 做 CAS 并更新 `usage_counter`，数据库自动递增行版本；发现倒退或异常由 AUTH/RISK 代码判断。
 - 密码历史、认证尝试和认证上下文为追加事实。
 
 ## 7. 创建和消费 Challenge `IssueChallenge` / `ConsumeChallenge`

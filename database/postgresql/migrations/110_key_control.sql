@@ -246,10 +246,10 @@ COMMENT ON COLUMN iam.security_exceptions.updated_at IS '数据库更新时间�
 COMMENT ON COLUMN iam.security_exceptions.row_version IS '乐观锁版本。';
 
 CREATE INDEX ix_cryptographic_keys_owner ON iam.cryptographic_keys (owner_type, owner_id, purpose, state);
-CREATE UNIQUE INDEX uq_cryptographic_key_kid ON iam.cryptographic_keys (owner_type, owner_id, purpose, kid) WHERE kid IS NOT NULL;
+CREATE UNIQUE INDEX uq_cryptographic_key_kid ON iam.cryptographic_keys (owner_type, owner_id, purpose, kid) NULLS NOT DISTINCT WHERE kid IS NOT NULL;
 CREATE INDEX ix_certificates_validity ON iam.certificates (state, valid_until);
 CREATE INDEX ix_configuration_versions_lookup ON iam.configuration_versions (config_type, config_code, scope_type, scope_id, state, version DESC);
 CREATE INDEX ix_configuration_releases_queue ON iam.configuration_releases (environment, state, created_at);
 CREATE INDEX ix_security_exceptions_expiry ON iam.security_exceptions (state, expires_at);
 COMMENT ON INDEX iam.ix_configuration_versions_lookup IS '控制面按配置键和状态定位候选版本。';
-COMMENT ON INDEX iam.uq_cryptographic_key_kid IS '仅对非空协议 kid 维持同一 Owner 和用途内唯一；无 kid 的数据加密 Key 可多版本并存。';
+COMMENT ON INDEX iam.uq_cryptographic_key_kid IS '仅对非空协议 kid 维持同一 Owner 和用途内唯一；平台 Owner 的 NULL owner_id 按同一值处理，无 kid 的数据加密 Key 可多版本并存。';

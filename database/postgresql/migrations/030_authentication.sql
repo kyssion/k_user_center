@@ -168,7 +168,8 @@ CREATE TABLE iam.auth_challenges (
     CONSTRAINT uq_auth_challenge_token UNIQUE (token_hash),
     CONSTRAINT ck_auth_challenge_attempts CHECK (attempt_count >= 0 AND max_attempts > 0 AND attempt_count <= max_attempts),
     CONSTRAINT ck_auth_challenge_version CHECK (row_version >= 0),
-    CONSTRAINT ck_auth_challenge_expiry CHECK (expires_at > created_at)
+    CONSTRAINT ck_auth_challenge_expiry CHECK (expires_at > created_at),
+    CONSTRAINT ck_auth_challenge_subject_pair CHECK ((subject_type IS NULL) = (subject_id IS NULL))
 );
 COMMENT ON TABLE iam.auth_challenges IS '验证码、Magic Link、绑定确认等短时挑战；只保存 Token 摘要，发送和验证策略由 AUTH/MSG 代码执行。';
 COMMENT ON COLUMN iam.auth_challenges.id IS '应用生成的 Challenge UUIDv7。';

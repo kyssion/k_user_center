@@ -42,10 +42,25 @@ SELECT
     encode(sha256(convert_to(json_schema::text, 'UTF8')), 'hex'),
     'DRAFT', NULL
 FROM seed
-ON CONFLICT ON CONSTRAINT uq_event_schema_version DO UPDATE
-SET id = current_schema.id
-WHERE current_schema.id = EXCLUDED.id
-  AND current_schema.schema_digest = EXCLUDED.schema_digest
-RETURNING 1
+ON CONFLICT ON CONSTRAINT uq_event_schema_version DO NOTHING
+RETURNING event_type, schema_version
+), matched AS (
+SELECT seed.event_type
+FROM seed
+WHERE EXISTS (
+          SELECT 1
+          FROM applied
+          WHERE applied.event_type = seed.event_type
+            AND applied.schema_version = 1
+      )
+   OR EXISTS (
+       SELECT 1
+       FROM iam.event_schema_versions current_schema
+       WHERE current_schema.event_type = seed.event_type
+         AND current_schema.schema_version = 1
+         AND current_schema.id = seed.id
+         AND current_schema.compatibility_mode = 'BACKWARD'
+         AND current_schema.schema_digest = encode(sha256(convert_to(seed.json_schema::text, 'UTF8')), 'hex')
+   )
 )
-SELECT 1 / CASE WHEN (SELECT count(*) FROM applied) = (SELECT count(*) FROM seed) THEN 1 ELSE 0 END AS seed_content_match;
+SELECT 1 / CASE WHEN (SELECT count(*) FROM matched) = (SELECT count(*) FROM seed) THEN 1 ELSE 0 END AS seed_content_match;

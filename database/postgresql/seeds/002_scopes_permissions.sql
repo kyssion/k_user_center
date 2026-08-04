@@ -15,17 +15,25 @@ INSERT INTO iam.oauth_scopes AS current_scope (
 )
 SELECT id::uuid, resource_id::uuid, scope_code, display_name, description, sensitivity, consent_required, state
 FROM seed
-ON CONFLICT ON CONSTRAINT uq_oauth_scopes_code DO UPDATE
-SET id = current_scope.id
-WHERE current_scope.id = EXCLUDED.id
-  AND current_scope.resource_id IS NOT DISTINCT FROM EXCLUDED.resource_id
-  AND current_scope.display_name = EXCLUDED.display_name
-  AND current_scope.description = EXCLUDED.description
-  AND current_scope.sensitivity = EXCLUDED.sensitivity
-  AND current_scope.consent_required = EXCLUDED.consent_required
-RETURNING 1
+ON CONFLICT ON CONSTRAINT uq_oauth_scopes_code DO NOTHING
+RETURNING scope_code
+), matched AS (
+SELECT seed.scope_code
+FROM seed
+WHERE EXISTS (SELECT 1 FROM applied WHERE applied.scope_code = seed.scope_code)
+   OR EXISTS (
+       SELECT 1
+       FROM iam.oauth_scopes current_scope
+       WHERE current_scope.scope_code = seed.scope_code
+         AND current_scope.id = seed.id::uuid
+         AND current_scope.resource_id IS NOT DISTINCT FROM seed.resource_id::uuid
+         AND current_scope.display_name = seed.display_name
+         AND current_scope.description = seed.description
+         AND current_scope.sensitivity = seed.sensitivity
+         AND current_scope.consent_required = seed.consent_required
+   )
 )
-SELECT 1 / CASE WHEN (SELECT count(*) FROM applied) = (SELECT count(*) FROM seed) THEN 1 ELSE 0 END AS seed_content_match;
+SELECT 1 / CASE WHEN (SELECT count(*) FROM matched) = (SELECT count(*) FROM seed) THEN 1 ELSE 0 END AS seed_content_match;
 
 WITH seed(id, permission_code, resource_type, action, sensitivity, description, state) AS (
 VALUES
@@ -83,13 +91,21 @@ INSERT INTO iam.permissions AS current_permission (
 )
 SELECT id::uuid, permission_code, resource_type, action, sensitivity, description, state
 FROM seed
-ON CONFLICT ON CONSTRAINT uq_permissions_code DO UPDATE
-SET id = current_permission.id
-WHERE current_permission.id = EXCLUDED.id
-  AND current_permission.resource_type = EXCLUDED.resource_type
-  AND current_permission.action = EXCLUDED.action
-  AND current_permission.sensitivity = EXCLUDED.sensitivity
-  AND current_permission.description = EXCLUDED.description
-RETURNING 1
+ON CONFLICT ON CONSTRAINT uq_permissions_code DO NOTHING
+RETURNING permission_code
+), matched AS (
+SELECT seed.permission_code
+FROM seed
+WHERE EXISTS (SELECT 1 FROM applied WHERE applied.permission_code = seed.permission_code)
+   OR EXISTS (
+       SELECT 1
+       FROM iam.permissions current_permission
+       WHERE current_permission.permission_code = seed.permission_code
+         AND current_permission.id = seed.id::uuid
+         AND current_permission.resource_type = seed.resource_type
+         AND current_permission.action = seed.action
+         AND current_permission.sensitivity = seed.sensitivity
+         AND current_permission.description = seed.description
+   )
 )
-SELECT 1 / CASE WHEN (SELECT count(*) FROM applied) = (SELECT count(*) FROM seed) THEN 1 ELSE 0 END AS seed_content_match;
+SELECT 1 / CASE WHEN (SELECT count(*) FROM matched) = (SELECT count(*) FROM seed) THEN 1 ELSE 0 END AS seed_content_match;

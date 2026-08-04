@@ -51,7 +51,6 @@ CREATE TABLE iam.sessions (
     state varchar(40) NOT NULL,
     security_profile_code varchar(40) NOT NULL,
     security_profile_version integer NOT NULL,
-    policy_version_ids uuid[] NOT NULL DEFAULT ARRAY[]::uuid[],
     consent_id uuid,
     consent_epoch bigint,
     revocation_watermark bigint,
@@ -69,7 +68,9 @@ CREATE TABLE iam.sessions (
     CONSTRAINT ck_sessions_profile_version CHECK (security_profile_version > 0),
     CONSTRAINT ck_sessions_epochs CHECK (user_security_epoch >= 0 AND client_security_epoch >= 0 AND (tenant_security_epoch IS NULL OR tenant_security_epoch >= 0) AND (consent_epoch IS NULL OR consent_epoch >= 0) AND (revocation_watermark IS NULL OR revocation_watermark >= 0)),
     CONSTRAINT ck_sessions_expiry CHECK (absolute_expires_at > created_at AND idle_expires_at > created_at AND idle_expires_at <= absolute_expires_at),
-    CONSTRAINT ck_sessions_version CHECK (row_version >= 0)
+    CONSTRAINT ck_sessions_version CHECK (row_version >= 0),
+    CONSTRAINT ck_sessions_consent_reference CHECK ((consent_id IS NULL) = (consent_epoch IS NULL)),
+    CONSTRAINT ck_sessions_tenant_epoch CHECK ((tenant_id IS NULL) = (tenant_security_epoch IS NULL))
 );
 COMMENT ON TABLE iam.sessions IS 'OP/设备会话；有效性、滑动过期、并发会话和撤销由 SESSION 代码判定。';
 COMMENT ON COLUMN iam.sessions.id IS '应用生成的会话内部 UUIDv7。';
@@ -82,7 +83,6 @@ COMMENT ON COLUMN iam.sessions.authentication_context_id IS '逻辑引用 iam.au
 COMMENT ON COLUMN iam.sessions.state IS '会话状态；由 SESSION 状态机维护。';
 COMMENT ON COLUMN iam.sessions.security_profile_code IS '创建会话时适用的 Security Profile 稳定代码。';
 COMMENT ON COLUMN iam.sessions.security_profile_version IS '创建会话时适用的 Security Profile 正整数版本。';
-COMMENT ON COLUMN iam.sessions.policy_version_ids IS '创建会话时适用的 iam.policy_versions.id 逻辑引用数组。';
 COMMENT ON COLUMN iam.sessions.consent_id IS '可空；以 Consent 为处理依据时逻辑引用 iam.consents.id。';
 COMMENT ON COLUMN iam.sessions.consent_epoch IS '可空；以 Consent 为依据时的聚合安全水位快照。';
 COMMENT ON COLUMN iam.sessions.revocation_watermark IS '可空；创建会话时适用的撤销水位快照。';
@@ -95,7 +95,22 @@ COMMENT ON COLUMN iam.sessions.last_seen_at IS '最近会话活动时间；更�
 COMMENT ON COLUMN iam.sessions.revoked_at IS '可空；会话撤销时间。';
 COMMENT ON COLUMN iam.sessions.created_at IS '数据库插入时间。';
 COMMENT ON COLUMN iam.sessions.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
-COMMENT ON COLUMN iam.sessions.row_version IS '乐观锁版本。';
+COMMENT ON COLUMN iam.sessions.row_version IS '数据库自动递增的乐观锁版本；代码只在 WHERE 条件中传入 expected version。';
+
+CREATE TABLE iam.session_policy_versions (
+    session_id uuid NOT NULL,
+    policy_version_id uuid NOT NULL,
+    apply_order integer NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT pk_session_policy_versions PRIMARY KEY (session_id, policy_version_id),
+    CONSTRAINT uq_session_policy_order UNIQUE (session_id, apply_order),
+    CONSTRAINT ck_session_policy_order CHECK (apply_order >= 0)
+);
+COMMENT ON TABLE iam.session_policy_versions IS '会话创建时采用的策略版本快照关系；数据库保护版本存在性和顺序唯一，策略适用性仍由代码判定。';
+COMMENT ON COLUMN iam.session_policy_versions.session_id IS '逻辑引用 iam.sessions.id。';
+COMMENT ON COLUMN iam.session_policy_versions.policy_version_id IS '逻辑引用 iam.policy_versions.id。';
+COMMENT ON COLUMN iam.session_policy_versions.apply_order IS '创建快照中的稳定非负顺序。';
+COMMENT ON COLUMN iam.session_policy_versions.created_at IS '数据库记录时间。';
 
 CREATE TABLE iam.session_participants (
     id uuid PRIMARY KEY,
@@ -247,7 +262,8 @@ CREATE TABLE iam.refresh_token_instances (
     CONSTRAINT uq_refresh_token_sequence UNIQUE (family_id, sequence_no),
     CONSTRAINT ck_refresh_token_sequence CHECK (sequence_no > 0),
     CONSTRAINT ck_refresh_token_version CHECK (row_version >= 0),
-    CONSTRAINT ck_refresh_token_expiry CHECK (expires_at > issued_at)
+    CONSTRAINT ck_refresh_token_expiry CHECK (expires_at > issued_at),
+    CONSTRAINT ck_refresh_token_used_time CHECK (used_at IS NULL OR used_at >= issued_at)
 );
 COMMENT ON TABLE iam.refresh_token_instances IS 'Refresh Token 单次实例；仅保存摘要，原子轮换和重放响应由 OAP 代码处理。';
 COMMENT ON COLUMN iam.refresh_token_instances.id IS '应用生成的实例 UUIDv7。';
@@ -274,11 +290,11 @@ CREATE TABLE iam.access_token_records (
     delegation_id uuid,
     delegation_chain_snapshot jsonb NOT NULL DEFAULT '[]'::jsonb,
     client_id uuid NOT NULL,
+    tenant_id uuid,
     audience text[] NOT NULL,
     scope_snapshot text[] NOT NULL,
     security_profile_code varchar(40) NOT NULL,
     security_profile_version integer NOT NULL,
-    policy_version_ids uuid[] NOT NULL DEFAULT ARRAY[]::uuid[],
     consent_id uuid,
     consent_epoch bigint,
     revocation_watermark bigint,
@@ -297,7 +313,14 @@ CREATE TABLE iam.access_token_records (
     CONSTRAINT uq_access_token_jti UNIQUE (jti),
     CONSTRAINT ck_access_token_profile_version CHECK (security_profile_version > 0),
     CONSTRAINT ck_access_token_epochs CHECK ((user_security_epoch IS NULL OR user_security_epoch >= 0) AND client_security_epoch >= 0 AND (tenant_security_epoch IS NULL OR tenant_security_epoch >= 0) AND (consent_epoch IS NULL OR consent_epoch >= 0) AND (revocation_watermark IS NULL OR revocation_watermark >= 0)),
-    CONSTRAINT ck_access_token_expiry CHECK (expires_at > issued_at)
+    CONSTRAINT ck_access_token_expiry CHECK (expires_at > issued_at),
+    CONSTRAINT ck_access_token_actor_pair CHECK ((actor_type IS NULL) = (actor_id IS NULL)),
+    CONSTRAINT ck_access_token_tenant_epoch CHECK ((tenant_id IS NULL) = (tenant_security_epoch IS NULL)),
+    CONSTRAINT ck_access_token_consent_reference CHECK ((consent_id IS NULL) = (consent_epoch IS NULL)),
+    CONSTRAINT ck_access_token_sender_constraint CHECK (
+        (sender_constraint_type IS NULL) = (sender_constraint_thumbprint IS NULL)
+    ),
+    CONSTRAINT ck_access_token_revocation_time CHECK (revoked_at IS NULL OR revoked_at >= issued_at)
 ) PARTITION BY HASH (jti);
 COMMENT ON TABLE iam.access_token_records IS 'Access Token 元数据和撤销定位信息；按 JTI Hash 分区以维持数据库全局唯一，不保存完整 Token。';
 COMMENT ON COLUMN iam.access_token_records.id IS '应用生成的记录 UUIDv7，与 JTI 组成分区主键。';
@@ -311,11 +334,11 @@ COMMENT ON COLUMN iam.access_token_records.actor_id IS '可空；按 actor_type 
 COMMENT ON COLUMN iam.access_token_records.delegation_id IS '可空；逻辑引用 iam.delegations.id。';
 COMMENT ON COLUMN iam.access_token_records.delegation_chain_snapshot IS '委托链稳定引用和深度快照；代码校验链路范围且禁止扩权。';
 COMMENT ON COLUMN iam.access_token_records.client_id IS '逻辑引用 iam.oauth_clients.id。';
+COMMENT ON COLUMN iam.access_token_records.tenant_id IS '可空；逻辑引用 iam.tenants.id；存在租户安全水位时必须同时保存租户标识。';
 COMMENT ON COLUMN iam.access_token_records.audience IS 'Token Audience 快照。';
 COMMENT ON COLUMN iam.access_token_records.scope_snapshot IS 'Token Scope 快照。';
 COMMENT ON COLUMN iam.access_token_records.security_profile_code IS 'Token 签发时适用的 Security Profile 稳定代码。';
 COMMENT ON COLUMN iam.access_token_records.security_profile_version IS 'Token 签发时适用的 Security Profile 正整数版本。';
-COMMENT ON COLUMN iam.access_token_records.policy_version_ids IS '签发决策使用的 iam.policy_versions.id 逻辑引用数组。';
 COMMENT ON COLUMN iam.access_token_records.consent_id IS '可空；以 Consent 为处理依据时逻辑引用 iam.consents.id。';
 COMMENT ON COLUMN iam.access_token_records.consent_epoch IS '可空；签发时适用的 Consent 安全水位。';
 COMMENT ON COLUMN iam.access_token_records.revocation_watermark IS '可空；签发时适用的撤销水位。';
@@ -331,6 +354,21 @@ COMMENT ON COLUMN iam.access_token_records.issued_at IS 'Token 签发时间；�
 COMMENT ON COLUMN iam.access_token_records.expires_at IS 'Token 过期时间。';
 COMMENT ON COLUMN iam.access_token_records.revoked_at IS '可空；单 Token 撤销时间。';
 COMMENT ON CONSTRAINT uq_access_token_jti ON iam.access_token_records IS '保证 Access Token JTI 在数据库内全局唯一；因此采用 Hash 而非月度 Range 分区。';
+
+CREATE TABLE iam.access_token_policy_versions (
+    token_jti varchar(160) NOT NULL,
+    policy_version_id uuid NOT NULL,
+    apply_order integer NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT pk_access_token_policy_versions PRIMARY KEY (token_jti, policy_version_id),
+    CONSTRAINT uq_access_token_policy_order UNIQUE (token_jti, apply_order),
+    CONSTRAINT ck_access_token_policy_order CHECK (apply_order >= 0)
+);
+COMMENT ON TABLE iam.access_token_policy_versions IS 'Access Token 签发时采用的策略版本快照关系；数据库保护版本存在性和顺序唯一，Token 声明及策略适用性仍由代码判定。';
+COMMENT ON COLUMN iam.access_token_policy_versions.token_jti IS '逻辑引用 iam.access_token_records.jti。';
+COMMENT ON COLUMN iam.access_token_policy_versions.policy_version_id IS '逻辑引用 iam.policy_versions.id。';
+COMMENT ON COLUMN iam.access_token_policy_versions.apply_order IS '签发快照中的稳定非负顺序。';
+COMMENT ON COLUMN iam.access_token_policy_versions.created_at IS '数据库记录时间。';
 
 CREATE TABLE iam.revocation_entries (
     id uuid PRIMARY KEY,
@@ -364,7 +402,10 @@ COMMENT ON COLUMN iam.revocation_entries.created_at IS '数据库插入时间。
 CREATE INDEX ix_devices_user ON iam.devices (user_id, lifecycle_state, last_seen_at DESC);
 CREATE INDEX ix_sessions_user_state ON iam.sessions (user_id, state, absolute_expires_at);
 CREATE INDEX ix_sessions_client_state ON iam.sessions (client_id, state, absolute_expires_at);
+CREATE INDEX ix_session_policy_versions_policy ON iam.session_policy_versions (policy_version_id, session_id);
 CREATE INDEX ix_authorization_codes_expiry ON iam.authorization_codes (state, expires_at);
 CREATE INDEX ix_authorization_grants_user_client ON iam.authorization_grants (user_id, client_id, state);
 CREATE INDEX ix_token_families_grant ON iam.token_families (grant_id, state);
 CREATE INDEX ix_access_token_subject ON iam.access_token_records (subject_id, issued_at DESC);
+CREATE INDEX ix_access_token_tenant ON iam.access_token_records (tenant_id, issued_at DESC) WHERE tenant_id IS NOT NULL;
+CREATE INDEX ix_access_token_policy_versions_policy ON iam.access_token_policy_versions (policy_version_id, token_jti);

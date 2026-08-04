@@ -72,7 +72,6 @@ CREATE TABLE iam.oauth_clients (
     state varchar(40) NOT NULL,
     client_security_epoch bigint NOT NULL DEFAULT 0,
     active_configuration_id uuid,
-    configuration jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     row_version bigint NOT NULL DEFAULT 0,
@@ -89,8 +88,7 @@ COMMENT ON COLUMN iam.oauth_clients.owner_type IS 'Client 所有者类型。';
 COMMENT ON COLUMN iam.oauth_clients.owner_id IS 'Client 所有者逻辑 ID。';
 COMMENT ON COLUMN iam.oauth_clients.state IS 'Client 状态；生命周期由 OAP 领域持有，CTRL 只提供配置审批事实。';
 COMMENT ON COLUMN iam.oauth_clients.client_security_epoch IS 'Client 安全水位；密钥或安全配置变化时由代码递增。';
-COMMENT ON COLUMN iam.oauth_clients.active_configuration_id IS '可空；逻辑引用 iam.configuration_versions.id。';
-COMMENT ON COLUMN iam.oauth_clients.configuration IS '非秘密协议配置快照；Secret 和私钥不得写入。';
+COMMENT ON COLUMN iam.oauth_clients.active_configuration_id IS '可空；逻辑引用 iam.configuration_versions.id；协议配置内容只保存在不可变配置版本中。';
 COMMENT ON COLUMN iam.oauth_clients.created_at IS '数据库插入时间。';
 COMMENT ON COLUMN iam.oauth_clients.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.oauth_clients.row_version IS '乐观锁版本。';
@@ -104,7 +102,7 @@ CREATE TABLE iam.api_resources (
     owner_id uuid NOT NULL,
     state varchar(40) NOT NULL,
     token_profile varchar(80) NOT NULL,
-    configuration jsonb NOT NULL DEFAULT '{}'::jsonb,
+    active_configuration_id uuid,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     row_version bigint NOT NULL DEFAULT 0,
@@ -120,7 +118,7 @@ COMMENT ON COLUMN iam.api_resources.owner_type IS '资源所有者类型。';
 COMMENT ON COLUMN iam.api_resources.owner_id IS '资源所有者逻辑 ID。';
 COMMENT ON COLUMN iam.api_resources.state IS '资源状态；生命周期由 OAP 领域持有，API 领域只消费资源登记事实。';
 COMMENT ON COLUMN iam.api_resources.token_profile IS '引用的 Token Profile 代码。';
-COMMENT ON COLUMN iam.api_resources.configuration IS '资源验证配置，不得含私钥。';
+COMMENT ON COLUMN iam.api_resources.active_configuration_id IS '可空；逻辑引用 iam.configuration_versions.id；资源验证配置内容只保存在不可变配置版本中。';
 COMMENT ON COLUMN iam.api_resources.created_at IS '数据库插入时间。';
 COMMENT ON COLUMN iam.api_resources.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.api_resources.row_version IS '乐观锁版本。';

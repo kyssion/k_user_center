@@ -228,7 +228,9 @@ CREATE TABLE iam.privacy_requests (
     row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT uq_privacy_request_operation UNIQUE (operation_id),
     CONSTRAINT ck_privacy_request_deadline CHECK (deadline_at > submitted_at),
-    CONSTRAINT ck_privacy_request_version CHECK (row_version >= 0)
+    CONSTRAINT ck_privacy_request_version CHECK (row_version >= 0),
+    CONSTRAINT ck_privacy_request_agent_pair CHECK ((agent_type IS NULL) = (agent_id IS NULL)),
+    CONSTRAINT ck_privacy_request_completion CHECK (completed_at IS NULL OR completed_at >= submitted_at)
 );
 COMMENT ON TABLE iam.privacy_requests IS '访问、更正、导出、删除等数据主体权利请求；身份核验、期限、编排和例外由 PRIV 代码处理。';
 COMMENT ON COLUMN iam.privacy_requests.id IS '应用生成的隐私请求 UUIDv7。';
@@ -264,7 +266,8 @@ CREATE TABLE iam.legal_holds (
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT ck_legal_hold_expiry CHECK (expires_at IS NULL OR expires_at > effective_at),
-    CONSTRAINT ck_legal_hold_version CHECK (row_version >= 0)
+    CONSTRAINT ck_legal_hold_version CHECK (row_version >= 0),
+    CONSTRAINT ck_legal_hold_release CHECK (released_at IS NULL OR released_at >= effective_at)
 );
 COMMENT ON TABLE iam.legal_holds IS '法律保留事实；适用范围、授权和解除由 PRIV/CTRL 代码决定。';
 COMMENT ON COLUMN iam.legal_holds.id IS '应用生成的 Legal Hold UUIDv7。';

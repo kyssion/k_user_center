@@ -14,10 +14,10 @@
 
 - 已在环境执行的迁移文件不可修改，只能追加新文件。
 - 全部业务对象位于 `iam` Schema。
-- 同库、单一目标且目标键唯一的直接 `*_id` 使用 `ON DELETE RESTRICT` Foreign Key；多态、数组和外部引用保留逻辑关系。
+- 同库、单一目标且目标键唯一的直接 `*_id` 使用 `ON DELETE RESTRICT` Foreign Key；内部多值引用使用关系表，多态和外部引用保留逻辑关系。
 - Foreign Key 只校验存在性；作用域、状态、授权、生命周期和业务删除行为由代码校验。
 - 每张逻辑表必须映射到一个主要业务模型和权威域；多领域复用遵守 `docs/database/业务模型与持久化边界清单.md` 的共享写入边界，不得形成影子状态或未声明双写。
-- `created_at`、`recorded_at` 使用数据库默认时间；`updated_at` 由唯一白名单技术 Trigger 使用 `statement_timestamp()` 自动维护。
+- `created_at`、`recorded_at` 使用数据库默认时间；白名单纯技术 Trigger 使用 `statement_timestamp()` 自动维护 `updated_at`，并在成功更新时自动递增 `row_version`。运行角色不得直接更新这两个技术字段。
 - UUID 由应用生成，推荐 UUIDv7；数据库不替应用推导业务标识。
 - Seed 使用稳定业务键和内容摘要保证幂等；同键内容不一致时执行失败，禁止静默覆盖或忽略漂移。
 - `configuration_versions`、事件 Schema 和消息模板 Seed 默认 `DRAFT`，不得作为已发布配置直接读取。
@@ -34,4 +34,4 @@ Get-ChildItem database/postgresql/migrations/*.sql | Sort-Object Name | ForEach-
 
 脚本使用 `\set ON_ERROR_STOP on`，任一语句失败即停止。角色脚本需要具备创建角色和授权的管理员权限。
 
-执行完全部 SQL 后运行 `verification/Generate-DatabaseDocs.ps1`，生成数据库需求覆盖索引、逻辑关系清单、孤儿检查 SQL 和数据字典，并校验 113/113 逻辑表业务模型映射、113/113 领域持久化范围映射及全部多领域复用表权威映射。数据库需求覆盖索引只证明持久化边界覆盖，不代替蓝图 §18.4 的正式代码实施与验收矩阵。
+执行完全部 SQL 后运行 `verification/Generate-DatabaseDocs.ps1`，生成数据库需求覆盖索引、逻辑关系清单、孤儿检查 SQL 和数据字典，并校验 117/117 逻辑表业务模型映射、117/117 领域持久化范围映射及全部多领域复用表权威映射。数据库需求覆盖索引只证明持久化边界覆盖，不代替蓝图 §18.4 的正式代码实施与验收矩阵。

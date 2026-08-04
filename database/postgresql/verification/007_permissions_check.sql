@@ -26,6 +26,48 @@ BEGIN
         errors := array_append(errors, format('缺少运行时角色：%s', array_to_string(missing_roles, ', ')));
     END IF;
 
+    IF EXISTS (
+        SELECT 1
+        FROM pg_roles role_object
+        WHERE role_object.rolname = ANY(ARRAY[
+            'iam_owner', 'iam_migrator', 'iam_app_rw', 'iam_app_ro',
+            'iam_id_rw', 'iam_auth_rw', 'iam_plt_rw', 'iam_tenant_rw', 'iam_oap_rw',
+            'iam_session_rw', 'iam_profile_rw', 'iam_priv_rw', 'iam_authz_rw', 'iam_fed_rw',
+            'iam_risk_rw', 'iam_machine_rw', 'iam_ctrl_rw', 'iam_key_rw', 'iam_event_rw',
+            'iam_msg_rw', 'iam_mig_rw',
+            'iam_identifier_reader', 'iam_auth_secret_reader', 'iam_token_secret_reader',
+            'iam_machine_secret_reader', 'iam_delivery_secret_reader', 'iam_migration_secret_reader',
+            'iam_audit_writer', 'iam_audit_reader', 'iam_ops'
+        ])
+          AND (
+              role_object.rolcanlogin OR role_object.rolsuper OR role_object.rolcreatedb
+              OR role_object.rolcreaterole OR role_object.rolreplication OR role_object.rolbypassrls
+              OR NOT role_object.rolinherit
+          )
+    ) THEN
+        errors := array_append(errors, 'IAM 能力角色存在 LOGIN、管理权限或非预期继承属性');
+    END IF;
+
+    IF NOT pg_has_role('iam_migrator', 'iam_owner', 'MEMBER') THEN
+        errors := array_append(errors, 'iam_migrator 未继承 iam_owner');
+    END IF;
+
+    FOREACH runtime_role IN ARRAY ARRAY[
+        'iam_app_rw', 'iam_app_ro',
+        'iam_id_rw', 'iam_auth_rw', 'iam_plt_rw', 'iam_tenant_rw', 'iam_oap_rw',
+        'iam_session_rw', 'iam_profile_rw', 'iam_priv_rw', 'iam_authz_rw', 'iam_fed_rw',
+        'iam_risk_rw', 'iam_machine_rw', 'iam_ctrl_rw', 'iam_key_rw', 'iam_event_rw',
+        'iam_msg_rw', 'iam_mig_rw',
+        'iam_identifier_reader', 'iam_auth_secret_reader', 'iam_token_secret_reader',
+        'iam_machine_secret_reader', 'iam_delivery_secret_reader', 'iam_migration_secret_reader',
+        'iam_audit_writer', 'iam_audit_reader', 'iam_ops'
+    ]
+    LOOP
+        IF pg_has_role(runtime_role, 'iam_owner', 'MEMBER') OR pg_has_role(runtime_role, 'iam_migrator', 'MEMBER') THEN
+            errors := array_append(errors, format('%s 意外继承 iam_owner 或 iam_migrator', runtime_role));
+        END IF;
+    END LOOP;
+
     FOREACH domain_role IN ARRAY ARRAY[
         'iam_id_rw', 'iam_auth_rw', 'iam_plt_rw', 'iam_tenant_rw', 'iam_oap_rw',
         'iam_session_rw', 'iam_profile_rw', 'iam_priv_rw', 'iam_authz_rw', 'iam_fed_rw',
@@ -54,7 +96,10 @@ BEGIN
        OR has_table_privilege('iam_app_rw', 'iam.idempotency_records', 'UPDATE')
        OR NOT has_column_privilege('iam_app_rw', 'iam.idempotency_records', 'state', 'UPDATE')
        OR has_column_privilege('iam_app_rw', 'iam.idempotency_records', 'request_hash', 'UPDATE')
-       OR NOT has_table_privilege('iam_app_rw', 'iam.outbox_events', 'INSERT') THEN
+       OR NOT has_table_privilege('iam_app_rw', 'iam.outbox_events', 'INSERT')
+       OR NOT has_table_privilege('iam_app_rw', 'iam.operation_policy_versions', 'SELECT')
+       OR NOT has_table_privilege('iam_app_rw', 'iam.operation_policy_versions', 'INSERT')
+       OR has_any_column_privilege('iam_app_rw', 'iam.operation_policy_versions', 'UPDATE') THEN
         errors := array_append(errors, 'iam_app_rw 缺少公共技术表能力');
     END IF;
     IF has_table_privilege('iam_app_rw', 'iam.global_users', 'SELECT')
@@ -107,9 +152,20 @@ BEGIN
        OR NOT has_table_privilege('iam_oap_rw', 'iam.access_token_records', 'INSERT')
        OR NOT has_column_privilege('iam_oap_rw', 'iam.access_token_records', 'revoked_at', 'UPDATE')
        OR has_column_privilege('iam_oap_rw', 'iam.access_token_records', 'token_hash', 'UPDATE')
+       OR has_table_privilege('iam_oap_rw', 'iam.access_token_policy_versions', 'SELECT')
+       OR NOT has_table_privilege('iam_oap_rw', 'iam.access_token_policy_versions', 'INSERT')
        OR NOT has_table_privilege('iam_token_secret_reader', 'iam.access_token_records', 'SELECT')
+       OR NOT has_table_privilege('iam_token_secret_reader', 'iam.access_token_policy_versions', 'SELECT')
        OR has_table_privilege('iam_token_secret_reader', 'iam.access_token_records', 'UPDATE') THEN
         errors := array_append(errors, 'OAP Token 敏感读写拆分错误');
+    END IF;
+    IF NOT has_table_privilege('iam_session_rw', 'iam.session_policy_versions', 'SELECT')
+       OR NOT has_table_privilege('iam_session_rw', 'iam.session_policy_versions', 'INSERT')
+       OR has_any_column_privilege('iam_session_rw', 'iam.session_policy_versions', 'UPDATE')
+       OR NOT has_table_privilege('iam_authz_rw', 'iam.authorization_decision_policy_versions', 'SELECT')
+       OR NOT has_table_privilege('iam_authz_rw', 'iam.authorization_decision_policy_versions', 'INSERT')
+       OR has_any_column_privilege('iam_authz_rw', 'iam.authorization_decision_policy_versions', 'UPDATE') THEN
+        errors := array_append(errors, '策略版本快照关系权限错误');
     END IF;
     IF has_table_privilege('iam_machine_rw', 'iam.machine_credentials', 'SELECT')
        OR NOT has_column_privilege('iam_machine_rw', 'iam.machine_credentials', 'state', 'UPDATE')
@@ -134,11 +190,17 @@ BEGIN
         errors := array_append(errors, '迁移原文敏感读写拆分错误');
     END IF;
 
-    -- 受控只读角色不能看到密文列，但保留必要的非敏感定位列。
+    -- 受控只读角色只读取显式目录白名单和少量脱敏定位列。
     IF has_column_privilege('iam_app_ro', 'iam.identifiers', 'value_ciphertext', 'SELECT')
        OR NOT has_column_privilege('iam_app_ro', 'iam.identifiers', 'blind_index', 'SELECT')
        OR has_column_privilege('iam_app_ro', 'iam.webhook_subscriptions', 'endpoint_ciphertext', 'SELECT')
-       OR has_column_privilege('iam_app_ro', 'iam.message_requests', 'target_ciphertext', 'SELECT') THEN
+       OR has_column_privilege('iam_app_ro', 'iam.message_requests', 'target_ciphertext', 'SELECT')
+       OR NOT has_table_privilege('iam_app_ro', 'iam.oauth_clients', 'SELECT')
+       OR NOT has_table_privilege('iam_app_ro', 'iam.policy_versions', 'SELECT')
+       OR has_table_privilege('iam_app_ro', 'iam.operations', 'SELECT')
+       OR has_table_privilege('iam_app_ro', 'iam.profile_documents', 'SELECT')
+       OR has_table_privilege('iam_app_ro', 'iam.risk_signals', 'SELECT')
+       OR has_table_privilege('iam_app_ro', 'iam.approval_cases', 'SELECT') THEN
         errors := array_append(errors, 'iam_app_ro 敏感列隔离错误');
     END IF;
 
@@ -147,7 +209,7 @@ BEGIN
        OR NOT has_column_privilege('iam_priv_rw', 'iam.agreement_versions', 'state', 'UPDATE')
        OR has_column_privilege('iam_priv_rw', 'iam.agreement_versions', 'content_digest', 'UPDATE')
        OR has_table_privilege('iam_authz_rw', 'iam.policy_versions', 'UPDATE')
-       OR NOT has_column_privilege('iam_authz_rw', 'iam.policy_versions', 'row_version', 'UPDATE')
+       OR NOT has_column_privilege('iam_authz_rw', 'iam.policy_versions', 'state', 'UPDATE')
        OR has_column_privilege('iam_authz_rw', 'iam.policy_versions', 'payload', 'UPDATE')
        OR has_table_privilege('iam_ctrl_rw', 'iam.configuration_versions', 'UPDATE')
        OR has_column_privilege('iam_ctrl_rw', 'iam.configuration_versions', 'payload_digest', 'UPDATE')
@@ -174,6 +236,31 @@ BEGIN
               AND has_table_privilege(runtime_role, format('%I.%I', schemaname, tablename), 'UPDATE')
         ) THEN
             errors := array_append(errors, format('%s 仍持有整表 UPDATE', runtime_role));
+        END IF;
+    END LOOP;
+
+    -- 技术元数据由数据库 Trigger 独占维护，任何运行时角色都不得直接 SET。
+    FOREACH runtime_role IN ARRAY ARRAY[
+        'iam_app_rw', 'iam_app_ro',
+        'iam_id_rw', 'iam_auth_rw', 'iam_plt_rw', 'iam_tenant_rw', 'iam_oap_rw',
+        'iam_session_rw', 'iam_profile_rw', 'iam_priv_rw', 'iam_authz_rw', 'iam_fed_rw',
+        'iam_risk_rw', 'iam_machine_rw', 'iam_ctrl_rw', 'iam_key_rw', 'iam_event_rw',
+        'iam_msg_rw', 'iam_mig_rw', 'iam_ops'
+    ]
+    LOOP
+        IF EXISTS (
+            SELECT 1
+            FROM information_schema.columns column_object
+            WHERE column_object.table_schema = 'iam'
+              AND column_object.column_name IN ('updated_at', 'row_version')
+              AND has_column_privilege(
+                  runtime_role,
+                  format('%I.%I', column_object.table_schema, column_object.table_name),
+                  column_object.column_name,
+                  'UPDATE'
+              )
+        ) THEN
+            errors := array_append(errors, format('%s 可直接改写 updated_at 或 row_version', runtime_role));
         END IF;
     END LOOP;
 

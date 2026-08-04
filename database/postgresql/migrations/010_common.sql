@@ -33,7 +33,7 @@ COMMENT ON COLUMN iam.idempotency_records.response_body IS '可空；可安全�
 COMMENT ON COLUMN iam.idempotency_records.expires_at IS '幂等记录技术过期时间，由代码按接口策略计算。';
 COMMENT ON COLUMN iam.idempotency_records.created_at IS '数据库插入时间。';
 COMMENT ON COLUMN iam.idempotency_records.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
-COMMENT ON COLUMN iam.idempotency_records.row_version IS '乐观锁版本；应用使用条件更新并在成功后递增。';
+COMMENT ON COLUMN iam.idempotency_records.row_version IS '乐观锁版本；应用使用 expected version 条件更新，成功更新时由技术 Trigger 自动递增。';
 COMMENT ON CONSTRAINT uq_idempotency_caller_key ON iam.idempotency_records IS '维持同一调用作用域内幂等键唯一。';
 
 CREATE TABLE iam.operations (
@@ -45,7 +45,6 @@ CREATE TABLE iam.operations (
     request_digest char(64) NOT NULL,
     capability_code varchar(80) NOT NULL,
     saga_type varchar(80) NOT NULL,
-    policy_version_ids uuid[] NOT NULL DEFAULT ARRAY[]::uuid[],
     actor_type varchar(40),
     actor_id uuid,
     subject_type varchar(40),
@@ -63,7 +62,9 @@ CREATE TABLE iam.operations (
     row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT uq_operations_caller_key UNIQUE (caller_scope, idempotency_key),
     CONSTRAINT ck_operations_version CHECK (row_version >= 0),
-    CONSTRAINT ck_operations_expiry CHECK (expires_at IS NULL OR expires_at > created_at)
+    CONSTRAINT ck_operations_expiry CHECK (expires_at IS NULL OR expires_at > created_at),
+    CONSTRAINT ck_operations_actor_pair CHECK ((actor_type IS NULL) = (actor_id IS NULL)),
+    CONSTRAINT ck_operations_subject_pair CHECK ((subject_type IS NULL) = (subject_id IS NULL))
 );
 COMMENT ON TABLE iam.operations IS '跨域或异步操作的持久化载体；数据库只保存权威状态、检查点、结果和证据，步骤编排、补偿、不可逆边界判断与状态机属于非数据库职责。';
 COMMENT ON COLUMN iam.operations.id IS '应用生成的 Operation UUIDv7，可作为 API 查询标识。';
@@ -74,7 +75,6 @@ COMMENT ON COLUMN iam.operations.idempotency_key IS '原始幂等键快照；不
 COMMENT ON COLUMN iam.operations.request_digest IS '规范化原始请求的 SHA-256 十六进制摘要。';
 COMMENT ON COLUMN iam.operations.capability_code IS '创建 Operation 的能力编号或稳定能力代码，例如 CAP-API-018。';
 COMMENT ON COLUMN iam.operations.saga_type IS 'Saga 或长事务编排类型；步骤和补偿规则由代码注册表解释。';
-COMMENT ON COLUMN iam.operations.policy_version_ids IS 'Operation 创建时适用的 iam.policy_versions.id 逻辑引用数组。';
 COMMENT ON COLUMN iam.operations.actor_type IS '可空；发起者类型，例如 USER、MACHINE、ADMIN。';
 COMMENT ON COLUMN iam.operations.actor_id IS '可空；按 actor_type 逻辑引用主体表，数据库不创建外键。';
 COMMENT ON COLUMN iam.operations.subject_type IS '可空；被操作主体类型。';
@@ -89,7 +89,7 @@ COMMENT ON COLUMN iam.operations.expires_at IS '可空；操作等待或查询�
 COMMENT ON COLUMN iam.operations.created_at IS '数据库插入时间。';
 COMMENT ON COLUMN iam.operations.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.operations.completed_at IS '可空；操作进入终态的业务时间。';
-COMMENT ON COLUMN iam.operations.row_version IS '乐观锁版本。';
+COMMENT ON COLUMN iam.operations.row_version IS '数据库自动递增的乐观锁版本；代码只在 WHERE 条件中传入 expected version。';
 COMMENT ON CONSTRAINT uq_operations_caller_key ON iam.operations IS '保证同一调用作用域和幂等键只绑定一个 Operation。';
 
 CREATE TABLE iam.operation_steps (
@@ -110,7 +110,10 @@ CREATE TABLE iam.operation_steps (
     row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT uq_operation_step UNIQUE (operation_id, step_code),
     CONSTRAINT ck_operation_step_attempt CHECK (attempt_count >= 0),
-    CONSTRAINT ck_operation_step_version CHECK (row_version >= 0)
+    CONSTRAINT ck_operation_step_version CHECK (row_version >= 0),
+    CONSTRAINT ck_operation_step_time CHECK (
+        completed_at IS NULL OR started_at IS NULL OR completed_at >= started_at
+    )
 );
 COMMENT ON TABLE iam.operation_steps IS 'Operation 从属步骤状态和检查点；数据库不执行工作流。';
 COMMENT ON COLUMN iam.operation_steps.id IS '应用生成的步骤 UUIDv7。';
@@ -127,7 +130,22 @@ COMMENT ON COLUMN iam.operation_steps.started_at IS '可空；本步骤首次开
 COMMENT ON COLUMN iam.operation_steps.completed_at IS '可空；本步骤完成业务时间。';
 COMMENT ON COLUMN iam.operation_steps.created_at IS '数据库插入时间。';
 COMMENT ON COLUMN iam.operation_steps.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
-COMMENT ON COLUMN iam.operation_steps.row_version IS '乐观锁版本。';
+COMMENT ON COLUMN iam.operation_steps.row_version IS '数据库自动递增的乐观锁版本；代码只在 WHERE 条件中传入 expected version。';
+
+CREATE TABLE iam.operation_policy_versions (
+    operation_id uuid NOT NULL,
+    policy_version_id uuid NOT NULL,
+    apply_order integer NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT pk_operation_policy_versions PRIMARY KEY (operation_id, policy_version_id),
+    CONSTRAINT uq_operation_policy_order UNIQUE (operation_id, apply_order),
+    CONSTRAINT ck_operation_policy_order CHECK (apply_order >= 0)
+);
+COMMENT ON TABLE iam.operation_policy_versions IS 'Operation 创建时采用的策略版本快照关系；数据库保护版本存在性和顺序唯一，策略适用性仍由代码判定。';
+COMMENT ON COLUMN iam.operation_policy_versions.operation_id IS '逻辑引用 iam.operations.id。';
+COMMENT ON COLUMN iam.operation_policy_versions.policy_version_id IS '逻辑引用 iam.policy_versions.id。';
+COMMENT ON COLUMN iam.operation_policy_versions.apply_order IS '创建快照中的稳定非负顺序。';
+COMMENT ON COLUMN iam.operation_policy_versions.created_at IS '数据库记录时间。';
 
 CREATE TABLE iam.outbox_events (
     id uuid NOT NULL,
@@ -163,7 +181,11 @@ CREATE TABLE iam.outbox_events (
     CONSTRAINT uq_outbox_event_id UNIQUE (event_id),
     CONSTRAINT ck_outbox_schema_version CHECK (schema_version > 0),
     CONSTRAINT ck_outbox_data_version CHECK (data_version IS NULL OR data_version >= 0),
-    CONSTRAINT ck_outbox_attempt CHECK (attempt_count >= 0)
+    CONSTRAINT ck_outbox_attempt CHECK (attempt_count >= 0),
+    CONSTRAINT ck_outbox_actor_reference CHECK (
+        (actor_type IS NULL AND actor_id_type IS NULL AND actor_id IS NULL)
+        OR (actor_type IS NOT NULL AND actor_id_type IS NOT NULL AND actor_id IS NOT NULL)
+    )
 ) PARTITION BY HASH (event_id);
 COMMENT ON TABLE iam.outbox_events IS '与领域变更同事务写入的事件 Outbox；按 event_id Hash 分区以同时维持全局事件唯一性。发布和重试由 EVENT 代码处理。';
 COMMENT ON COLUMN iam.outbox_events.id IS '应用生成的内部记录 UUIDv7；分区主键组成部分。';
@@ -180,7 +202,7 @@ COMMENT ON COLUMN iam.outbox_events.producer_id IS '按 producer_type 逻辑引�
 COMMENT ON COLUMN iam.outbox_events.subject_ref_type IS '事件主体引用的显式标识类型，例如 GLOBAL_USER_ID、PAIRWISE_SUBJECT 或 RESOURCE_ID。';
 COMMENT ON COLUMN iam.outbox_events.subject_ref_id IS '事件主体稳定引用；对外投递前由代码按接收方改写。';
 COMMENT ON COLUMN iam.outbox_events.actor_type IS '可空；触发事件的 Actor 类型。';
-COMMENT ON COLUMN iam.outbox_events.actor_id_type IS '可空；Actor 标识类型；actor_id 非空时由代码保证同时存在。';
+COMMENT ON COLUMN iam.outbox_events.actor_id_type IS '可空；Actor 标识类型；数据库保证与 actor_type、actor_id 成组为空或成组存在。';
 COMMENT ON COLUMN iam.outbox_events.actor_id IS '可空；按 actor_type 与 actor_id_type 逻辑引用自然人、机器主体或 Client；对外事件由代码执行 pairwise 改写或移除。';
 COMMENT ON COLUMN iam.outbox_events.occurred_at IS '领域事实实际发生时间，由生产者代码传入。';
 COMMENT ON COLUMN iam.outbox_events.data_version IS '可空；事件主体数据版本，用于消费者拒绝旧版本覆盖新版本。';
@@ -248,7 +270,9 @@ CREATE TABLE iam.audit_events (
     occurred_at timestamptz NOT NULL,
     recorded_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT pk_audit_events PRIMARY KEY (id, event_id),
-    CONSTRAINT uq_audit_events_event_id UNIQUE (event_id)
+    CONSTRAINT uq_audit_events_event_id UNIQUE (event_id),
+    CONSTRAINT ck_audit_actor_pair CHECK ((actor_type IS NULL) = (actor_id IS NULL)),
+    CONSTRAINT ck_audit_subject_pair CHECK ((subject_type IS NULL) = (subject_id IS NULL))
 ) PARTITION BY HASH (event_id);
 COMMENT ON TABLE iam.audit_events IS '不可变追加审计事件；按 event_id Hash 分区并由数据库保证事件 ID 全局唯一，禁止应用角色更新或删除。';
 COMMENT ON COLUMN iam.audit_events.id IS '应用生成的审计记录 UUIDv7；与 event_id 组成分区主键。';
@@ -277,6 +301,7 @@ CREATE INDEX ix_idempotency_expiry ON iam.idempotency_records (expires_at);
 CREATE INDEX ix_operations_queue ON iam.operations (state, updated_at);
 CREATE INDEX ix_operations_subject ON iam.operations (subject_type, subject_id, created_at DESC);
 CREATE INDEX ix_operation_steps_queue ON iam.operation_steps (state, next_attempt_at);
+CREATE INDEX ix_operation_policy_versions_policy ON iam.operation_policy_versions (policy_version_id, operation_id);
 CREATE INDEX ix_outbox_publish_queue ON iam.outbox_events (publish_state, next_attempt_at, recorded_at);
 CREATE INDEX ix_inbox_state ON iam.inbox_messages (consumer_id, state, received_at);
 CREATE INDEX ix_audit_subject_time ON iam.audit_events (subject_type, subject_id, occurred_at DESC);

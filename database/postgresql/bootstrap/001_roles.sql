@@ -42,6 +42,55 @@ BEGIN
 END
 $bootstrap$;
 
+-- 角色脚本可重复执行时也必须收敛已有同名角色的安全属性，不能只依赖首次 CREATE ROLE。
+DO $harden_roles$
+DECLARE
+    role_name text;
+    runtime_role text;
+BEGIN
+    FOREACH role_name IN ARRAY ARRAY[
+        'iam_owner', 'iam_migrator', 'iam_app_rw', 'iam_app_ro',
+        'iam_id_rw', 'iam_auth_rw', 'iam_plt_rw', 'iam_tenant_rw', 'iam_oap_rw',
+        'iam_session_rw', 'iam_profile_rw', 'iam_priv_rw', 'iam_authz_rw', 'iam_fed_rw',
+        'iam_risk_rw', 'iam_machine_rw', 'iam_ctrl_rw', 'iam_key_rw', 'iam_event_rw',
+        'iam_msg_rw', 'iam_mig_rw',
+        'iam_identifier_reader', 'iam_auth_secret_reader', 'iam_token_secret_reader',
+        'iam_machine_secret_reader', 'iam_delivery_secret_reader', 'iam_migration_secret_reader',
+        'iam_audit_writer', 'iam_audit_reader', 'iam_ops'
+    ]
+    LOOP
+        EXECUTE format(
+            'ALTER ROLE %I WITH NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT',
+            role_name
+        );
+    END LOOP;
+
+    -- 运行时能力角色不得直接继承对象所有者或迁移角色；未知的间接继承由 Verification 阻断。
+    FOREACH runtime_role IN ARRAY ARRAY[
+        'iam_app_rw', 'iam_app_ro',
+        'iam_id_rw', 'iam_auth_rw', 'iam_plt_rw', 'iam_tenant_rw', 'iam_oap_rw',
+        'iam_session_rw', 'iam_profile_rw', 'iam_priv_rw', 'iam_authz_rw', 'iam_fed_rw',
+        'iam_risk_rw', 'iam_machine_rw', 'iam_ctrl_rw', 'iam_key_rw', 'iam_event_rw',
+        'iam_msg_rw', 'iam_mig_rw',
+        'iam_identifier_reader', 'iam_auth_secret_reader', 'iam_token_secret_reader',
+        'iam_machine_secret_reader', 'iam_delivery_secret_reader', 'iam_migration_secret_reader',
+        'iam_audit_writer', 'iam_audit_reader', 'iam_ops'
+    ]
+    LOOP
+        IF EXISTS (
+            SELECT 1
+            FROM pg_auth_members membership
+            JOIN pg_roles granted_role ON granted_role.oid = membership.roleid
+            JOIN pg_roles member_role ON member_role.oid = membership.member
+            WHERE member_role.rolname = runtime_role
+              AND granted_role.rolname IN ('iam_owner', 'iam_migrator')
+        ) THEN
+            EXECUTE format('REVOKE iam_owner, iam_migrator FROM %I', runtime_role);
+        END IF;
+    END LOOP;
+END
+$harden_roles$;
+
 COMMENT ON ROLE iam_owner IS 'IAM 数据库对象所有者；应用运行时禁止使用。';
 COMMENT ON ROLE iam_migrator IS 'IAM 版本化迁移执行角色；登录身份由部署平台授予该角色。';
 COMMENT ON ROLE iam_app_rw IS 'IAM 跨领域技术表能力角色；仅供领域写角色继承，不得直接授予登录身份。';

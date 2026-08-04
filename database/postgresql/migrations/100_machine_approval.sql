@@ -210,7 +210,7 @@ COMMENT ON COLUMN iam.approval_cases.initiator_id IS '发起者逻辑 ID。';
 COMMENT ON COLUMN iam.approval_cases.tenant_id IS '可空；逻辑引用 iam.tenants.id。';
 COMMENT ON COLUMN iam.approval_cases.request_digest IS '规范化请求 SHA-256 摘要。';
 COMMENT ON COLUMN iam.approval_cases.request_snapshot IS '待审批请求快照；代码脱敏和版本化。';
-COMMENT ON COLUMN iam.approval_cases.policy_version_id IS '可空；逻辑引用审批策略版本。';
+COMMENT ON COLUMN iam.approval_cases.policy_version_id IS '可空；逻辑引用 iam.policy_versions.id；数据库校验版本存在，审批要求和适用性由 CTRL 代码解释。';
 COMMENT ON COLUMN iam.approval_cases.resource_version IS '可空；发起时目标资源版本，用于执行前防 TOCTOU。';
 COMMENT ON COLUMN iam.approval_cases.required_approvals IS '策略快照要求的最少批准数。';
 COMMENT ON COLUMN iam.approval_cases.state IS '审批单状态。';
@@ -251,5 +251,6 @@ CREATE INDEX ix_workload_attestations_principal ON iam.workload_attestations (ma
 CREATE INDEX ix_delegations_actor ON iam.delegations (actor_user_id, state, valid_until);
 CREATE INDEX ix_delegations_subject ON iam.delegations (subject_user_id, state, valid_until);
 CREATE INDEX ix_approval_cases_queue ON iam.approval_cases (state, expires_at, created_at);
+CREATE INDEX ix_approval_cases_policy ON iam.approval_cases (policy_version_id, created_at DESC) WHERE policy_version_id IS NOT NULL;
 CREATE INDEX ix_approval_actions_case ON iam.approval_actions (approval_case_id, created_at);
 COMMENT ON INDEX iam.ix_approval_cases_queue IS '审批处理器按状态和过期时间查询待办。';

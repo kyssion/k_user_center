@@ -65,7 +65,8 @@ $runtime_permission_reset$;
 
 -- 跨领域技术表能力。iam_app_rw 只供领域写角色继承，禁止直接配置为登录身份。
 GRANT SELECT, INSERT ON
-    iam.idempotency_records, iam.operations, iam.operation_steps, iam.inbox_messages
+    iam.idempotency_records, iam.operations, iam.operation_steps,
+    iam.operation_policy_versions, iam.inbox_messages
 TO iam_app_rw;
 GRANT SELECT, INSERT ON iam.outbox_events TO iam_app_rw;
 
@@ -103,14 +104,16 @@ GRANT SELECT, INSERT ON
     iam.authorization_grants, iam.token_families
 TO iam_oap_rw;
 GRANT INSERT ON
-    iam.authorization_codes, iam.refresh_token_instances, iam.access_token_records
+    iam.authorization_codes, iam.refresh_token_instances, iam.access_token_records,
+    iam.access_token_policy_versions
 TO iam_oap_rw;
 GRANT SELECT ON
-    iam.authorization_codes, iam.refresh_token_instances, iam.access_token_records
+    iam.authorization_codes, iam.refresh_token_instances, iam.access_token_records,
+    iam.access_token_policy_versions
 TO iam_token_secret_reader;
 
 -- SESSION：撤销记录是仅追加事实。
-GRANT SELECT, INSERT ON iam.devices, iam.sessions, iam.session_participants TO iam_session_rw;
+GRANT SELECT, INSERT ON iam.devices, iam.sessions, iam.session_participants, iam.session_policy_versions TO iam_session_rw;
 GRANT SELECT, INSERT ON iam.revocation_entries TO iam_session_rw;
 
 -- PROFILE。
@@ -129,7 +132,7 @@ TO iam_priv_rw;
 GRANT SELECT, INSERT ON
     iam.permissions, iam.roles, iam.role_permissions, iam.user_role_assignments,
     iam.group_role_assignments, iam.machine_role_assignments, iam.data_scope_definitions,
-    iam.policy_bindings, iam.relationship_tuples
+    iam.policy_bindings, iam.relationship_tuples, iam.authorization_decision_policy_versions
 TO iam_authz_rw;
 GRANT SELECT, INSERT ON iam.policy_versions TO iam_authz_rw;
 GRANT SELECT, INSERT ON iam.authorization_decisions TO iam_authz_rw;
@@ -195,7 +198,7 @@ GRANT SELECT ON
     iam.message_providers, iam.message_template_versions, iam.legacy_systems
 TO iam_ops;
 GRANT SELECT, INSERT ON
-    iam.operations, iam.operation_steps, iam.outbox_events, iam.inbox_messages,
+    iam.operations, iam.operation_steps, iam.operation_policy_versions, iam.outbox_events, iam.inbox_messages,
     iam.directory_sync_cursors, iam.directory_sync_batches,
     iam.migration_batches, iam.migration_items,
     iam.webhook_deliveries, iam.event_replay_requests, iam.consumer_checkpoints
@@ -204,14 +207,19 @@ GRANT INSERT ON iam.message_requests TO iam_ops;
 GRANT SELECT, INSERT ON iam.webhook_delivery_attempts, iam.message_delivery_attempts TO iam_ops;
 GRANT INSERT ON iam.migration_change_logs TO iam_ops;
 
--- 受控只读角色默认可读非敏感表；敏感表改为无权限或脱敏列级读取。
-GRANT SELECT ON ALL TABLES IN SCHEMA iam TO iam_app_ro;
-REVOKE ALL ON
-    iam.credential_materials, iam.password_history, iam.recovery_codes, iam.auth_challenges,
-    iam.authorization_codes, iam.refresh_token_instances, iam.access_token_records,
-    iam.machine_credentials, iam.identifiers, iam.webhook_subscriptions,
-    iam.message_requests, iam.legacy_id_mappings, iam.migration_change_logs
-FROM iam_app_ro;
+-- 受控只读角色使用显式目录白名单；个人事实、运行载荷、凭证、风险、审批和审计数据不做默认开放。
+GRANT SELECT ON
+    iam.business_lines, iam.applications, iam.oauth_clients, iam.api_resources, iam.oauth_scopes,
+    iam.tenants, iam.organizations, iam.groups,
+    iam.permissions, iam.roles, iam.role_permissions, iam.data_scope_definitions,
+    iam.policy_versions, iam.policy_bindings,
+    iam.identity_providers, iam.directory_connectors,
+    iam.machine_principals, iam.workload_trust_bundle_versions,
+    iam.cryptographic_keys, iam.certificates, iam.jwks_releases, iam.jwks_release_keys,
+    iam.configuration_versions, iam.configuration_releases, iam.configuration_release_items,
+    iam.event_schema_versions, iam.message_providers, iam.message_template_versions,
+    iam.legacy_systems
+TO iam_app_ro;
 GRANT SELECT (
     id, identifier_type, scope_type, scope_id, blind_index, value_fingerprint,
     normalization_version, verification_state, verified_at, created_at, updated_at, row_version

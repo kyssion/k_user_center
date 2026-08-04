@@ -3,7 +3,7 @@
 SET ROLE iam_owner;
 
 -- 仅为同库、单一目标、目标键数据库唯一的直接引用建立 FK。
--- 多态、数组、外部系统引用及租户/状态/授权有效性仍由代码校验；禁止级联删除。
+-- 内部多值引用已关系化；多态、外部系统引用及租户/状态/授权有效性仍由代码校验；禁止级联删除。
 
 ALTER TABLE iam.access_token_records ADD CONSTRAINT fk_access_token_records_authorization_decision_id FOREIGN KEY (authorization_decision_id) REFERENCES iam.authorization_decisions (decision_id) ON DELETE RESTRICT;
 ALTER TABLE iam.access_token_records ADD CONSTRAINT fk_access_token_records_client_id FOREIGN KEY (client_id) REFERENCES iam.oauth_clients (id) ON DELETE RESTRICT;
@@ -11,12 +11,17 @@ ALTER TABLE iam.access_token_records ADD CONSTRAINT fk_access_token_records_cons
 ALTER TABLE iam.access_token_records ADD CONSTRAINT fk_access_token_records_delegation_id FOREIGN KEY (delegation_id) REFERENCES iam.delegations (id) ON DELETE RESTRICT;
 ALTER TABLE iam.access_token_records ADD CONSTRAINT fk_access_token_records_grant_id FOREIGN KEY (grant_id) REFERENCES iam.authorization_grants (id) ON DELETE RESTRICT;
 ALTER TABLE iam.access_token_records ADD CONSTRAINT fk_access_token_records_session_id FOREIGN KEY (session_id) REFERENCES iam.sessions (id) ON DELETE RESTRICT;
+ALTER TABLE iam.access_token_records ADD CONSTRAINT fk_access_token_records_tenant_id FOREIGN KEY (tenant_id) REFERENCES iam.tenants (id) ON DELETE RESTRICT;
 ALTER TABLE iam.access_token_records ADD CONSTRAINT fk_access_token_records_user_id FOREIGN KEY (user_id) REFERENCES iam.global_users (id) ON DELETE RESTRICT;
+ALTER TABLE iam.access_token_policy_versions ADD CONSTRAINT fk_access_token_policy_versions_policy_version_id FOREIGN KEY (policy_version_id) REFERENCES iam.policy_versions (id) ON DELETE RESTRICT;
+ALTER TABLE iam.access_token_policy_versions ADD CONSTRAINT fk_access_token_policy_versions_token_jti FOREIGN KEY (token_jti) REFERENCES iam.access_token_records (jti) ON DELETE RESTRICT;
 ALTER TABLE iam.agreement_acceptances ADD CONSTRAINT fk_agreement_acceptances_agreement_version_id FOREIGN KEY (agreement_version_id) REFERENCES iam.agreement_versions (id) ON DELETE RESTRICT;
 ALTER TABLE iam.agreement_acceptances ADD CONSTRAINT fk_agreement_acceptances_user_id FOREIGN KEY (user_id) REFERENCES iam.global_users (id) ON DELETE RESTRICT;
 ALTER TABLE iam.api_resources ADD CONSTRAINT fk_api_resources_business_line_id FOREIGN KEY (business_line_id) REFERENCES iam.business_lines (id) ON DELETE RESTRICT;
+ALTER TABLE iam.api_resources ADD CONSTRAINT fk_api_resources_active_configuration_id FOREIGN KEY (active_configuration_id) REFERENCES iam.configuration_versions (id) ON DELETE RESTRICT;
 ALTER TABLE iam.applications ADD CONSTRAINT fk_applications_business_line_id FOREIGN KEY (business_line_id) REFERENCES iam.business_lines (id) ON DELETE RESTRICT;
 ALTER TABLE iam.approval_actions ADD CONSTRAINT fk_approval_actions_approval_case_id FOREIGN KEY (approval_case_id) REFERENCES iam.approval_cases (id) ON DELETE RESTRICT;
+ALTER TABLE iam.approval_cases ADD CONSTRAINT fk_approval_cases_policy_version_id FOREIGN KEY (policy_version_id) REFERENCES iam.policy_versions (id) ON DELETE RESTRICT;
 ALTER TABLE iam.approval_cases ADD CONSTRAINT fk_approval_cases_tenant_id FOREIGN KEY (tenant_id) REFERENCES iam.tenants (id) ON DELETE RESTRICT;
 ALTER TABLE iam.audit_events ADD CONSTRAINT fk_audit_events_approval_case_id FOREIGN KEY (approval_case_id) REFERENCES iam.approval_cases (id) ON DELETE RESTRICT;
 ALTER TABLE iam.audit_events ADD CONSTRAINT fk_audit_events_tenant_id FOREIGN KEY (tenant_id) REFERENCES iam.tenants (id) ON DELETE RESTRICT;
@@ -33,8 +38,12 @@ ALTER TABLE iam.authorization_codes ADD CONSTRAINT fk_authorization_codes_client
 ALTER TABLE iam.authorization_codes ADD CONSTRAINT fk_authorization_codes_login_transaction_id FOREIGN KEY (login_transaction_id) REFERENCES iam.login_transactions (id) ON DELETE RESTRICT;
 ALTER TABLE iam.authorization_codes ADD CONSTRAINT fk_authorization_codes_user_id FOREIGN KEY (user_id) REFERENCES iam.global_users (id) ON DELETE RESTRICT;
 ALTER TABLE iam.authorization_decisions ADD CONSTRAINT fk_authorization_decisions_consent_id FOREIGN KEY (consent_id) REFERENCES iam.consents (id) ON DELETE RESTRICT;
+ALTER TABLE iam.authorization_decisions ADD CONSTRAINT fk_authorization_decisions_client_id FOREIGN KEY (client_id) REFERENCES iam.oauth_clients (id) ON DELETE RESTRICT;
 ALTER TABLE iam.authorization_decisions ADD CONSTRAINT fk_authorization_decisions_delegation_id FOREIGN KEY (delegation_id) REFERENCES iam.delegations (id) ON DELETE RESTRICT;
+ALTER TABLE iam.authorization_decisions ADD CONSTRAINT fk_authorization_decisions_risk_assessment_id FOREIGN KEY (risk_assessment_id) REFERENCES iam.risk_assessments (assessment_id) ON DELETE RESTRICT;
 ALTER TABLE iam.authorization_decisions ADD CONSTRAINT fk_authorization_decisions_tenant_id FOREIGN KEY (tenant_id) REFERENCES iam.tenants (id) ON DELETE RESTRICT;
+ALTER TABLE iam.authorization_decision_policy_versions ADD CONSTRAINT fk_authorization_decision_policy_versions_decision_id FOREIGN KEY (decision_id) REFERENCES iam.authorization_decisions (decision_id) ON DELETE RESTRICT;
+ALTER TABLE iam.authorization_decision_policy_versions ADD CONSTRAINT fk_authorization_decision_policy_versions_policy_version_id FOREIGN KEY (policy_version_id) REFERENCES iam.policy_versions (id) ON DELETE RESTRICT;
 ALTER TABLE iam.authorization_grants ADD CONSTRAINT fk_authorization_grants_client_id FOREIGN KEY (client_id) REFERENCES iam.oauth_clients (id) ON DELETE RESTRICT;
 ALTER TABLE iam.authorization_grants ADD CONSTRAINT fk_authorization_grants_consent_id FOREIGN KEY (consent_id) REFERENCES iam.consents (id) ON DELETE RESTRICT;
 ALTER TABLE iam.authorization_grants ADD CONSTRAINT fk_authorization_grants_resource_id FOREIGN KEY (resource_id) REFERENCES iam.api_resources (id) ON DELETE RESTRICT;
@@ -123,6 +132,8 @@ ALTER TABLE iam.oauth_clients ADD CONSTRAINT fk_oauth_clients_active_configurati
 ALTER TABLE iam.oauth_clients ADD CONSTRAINT fk_oauth_clients_application_id FOREIGN KEY (application_id) REFERENCES iam.applications (id) ON DELETE RESTRICT;
 ALTER TABLE iam.oauth_scopes ADD CONSTRAINT fk_oauth_scopes_resource_id FOREIGN KEY (resource_id) REFERENCES iam.api_resources (id) ON DELETE RESTRICT;
 ALTER TABLE iam.operation_steps ADD CONSTRAINT fk_operation_steps_operation_id FOREIGN KEY (operation_id) REFERENCES iam.operations (id) ON DELETE RESTRICT;
+ALTER TABLE iam.operation_policy_versions ADD CONSTRAINT fk_operation_policy_versions_operation_id FOREIGN KEY (operation_id) REFERENCES iam.operations (id) ON DELETE RESTRICT;
+ALTER TABLE iam.operation_policy_versions ADD CONSTRAINT fk_operation_policy_versions_policy_version_id FOREIGN KEY (policy_version_id) REFERENCES iam.policy_versions (id) ON DELETE RESTRICT;
 ALTER TABLE iam.operations ADD CONSTRAINT fk_operations_tenant_id FOREIGN KEY (tenant_id) REFERENCES iam.tenants (id) ON DELETE RESTRICT;
 ALTER TABLE iam.organizations ADD CONSTRAINT fk_organizations_parent_organization_id FOREIGN KEY (parent_organization_id) REFERENCES iam.organizations (id) ON DELETE RESTRICT;
 ALTER TABLE iam.organizations ADD CONSTRAINT fk_organizations_tenant_id FOREIGN KEY (tenant_id) REFERENCES iam.tenants (id) ON DELETE RESTRICT;
@@ -144,6 +155,7 @@ ALTER TABLE iam.resource_quotas ADD CONSTRAINT fk_resource_quotas_configuration_
 ALTER TABLE iam.risk_assessment_signals ADD CONSTRAINT fk_risk_assessment_signals_assessment_id FOREIGN KEY (assessment_id) REFERENCES iam.risk_assessments (id) ON DELETE RESTRICT;
 ALTER TABLE iam.risk_assessment_signals ADD CONSTRAINT fk_risk_assessment_signals_signal_id FOREIGN KEY (signal_id) REFERENCES iam.risk_signals (signal_id) ON DELETE RESTRICT;
 ALTER TABLE iam.risk_assessments ADD CONSTRAINT fk_risk_assessments_model_version_id FOREIGN KEY (model_version_id) REFERENCES iam.configuration_versions (id) ON DELETE RESTRICT;
+ALTER TABLE iam.risk_assessments ADD CONSTRAINT fk_risk_assessments_risk_policy_version_id FOREIGN KEY (risk_policy_version_id) REFERENCES iam.configuration_versions (id) ON DELETE RESTRICT;
 ALTER TABLE iam.risk_assessments ADD CONSTRAINT fk_risk_assessments_tenant_id FOREIGN KEY (tenant_id) REFERENCES iam.tenants (id) ON DELETE RESTRICT;
 ALTER TABLE iam.risk_cases ADD CONSTRAINT fk_risk_cases_tenant_id FOREIGN KEY (tenant_id) REFERENCES iam.tenants (id) ON DELETE RESTRICT;
 ALTER TABLE iam.risk_signals ADD CONSTRAINT fk_risk_signals_tenant_id FOREIGN KEY (tenant_id) REFERENCES iam.tenants (id) ON DELETE RESTRICT;
@@ -154,6 +166,8 @@ ALTER TABLE iam.security_signals ADD CONSTRAINT fk_security_signals_client_id FO
 ALTER TABLE iam.security_signals ADD CONSTRAINT fk_security_signals_session_id FOREIGN KEY (session_id) REFERENCES iam.sessions (id) ON DELETE RESTRICT;
 ALTER TABLE iam.session_participants ADD CONSTRAINT fk_session_participants_rp_client_id FOREIGN KEY (rp_client_id) REFERENCES iam.oauth_clients (id) ON DELETE RESTRICT;
 ALTER TABLE iam.session_participants ADD CONSTRAINT fk_session_participants_session_id FOREIGN KEY (session_id) REFERENCES iam.sessions (id) ON DELETE RESTRICT;
+ALTER TABLE iam.session_policy_versions ADD CONSTRAINT fk_session_policy_versions_policy_version_id FOREIGN KEY (policy_version_id) REFERENCES iam.policy_versions (id) ON DELETE RESTRICT;
+ALTER TABLE iam.session_policy_versions ADD CONSTRAINT fk_session_policy_versions_session_id FOREIGN KEY (session_id) REFERENCES iam.sessions (id) ON DELETE RESTRICT;
 ALTER TABLE iam.sessions ADD CONSTRAINT fk_sessions_authentication_context_id FOREIGN KEY (authentication_context_id) REFERENCES iam.authentication_contexts (id) ON DELETE RESTRICT;
 ALTER TABLE iam.sessions ADD CONSTRAINT fk_sessions_client_id FOREIGN KEY (client_id) REFERENCES iam.oauth_clients (id) ON DELETE RESTRICT;
 ALTER TABLE iam.sessions ADD CONSTRAINT fk_sessions_consent_id FOREIGN KEY (consent_id) REFERENCES iam.consents (id) ON DELETE RESTRICT;
