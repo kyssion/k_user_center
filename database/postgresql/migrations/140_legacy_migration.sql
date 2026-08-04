@@ -31,7 +31,7 @@ COMMENT ON COLUMN iam.legacy_systems.state IS '旧系统迁移和退役状态。
 COMMENT ON COLUMN iam.legacy_systems.retirement_at IS '可空；计划或实际退役时间。';
 COMMENT ON COLUMN iam.legacy_systems.active_configuration_id IS '可空；逻辑引用 iam.configuration_versions.id。';
 COMMENT ON COLUMN iam.legacy_systems.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.legacy_systems.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.legacy_systems.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.legacy_systems.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.legacy_id_mappings (
@@ -65,7 +65,7 @@ COMMENT ON COLUMN iam.legacy_id_mappings.state IS '映射状态。';
 COMMENT ON COLUMN iam.legacy_id_mappings.first_mapped_at IS '首次建立映射时间。';
 COMMENT ON COLUMN iam.legacy_id_mappings.last_verified_at IS '可空；最近对账确认时间。';
 COMMENT ON COLUMN iam.legacy_id_mappings.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.legacy_id_mappings.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.legacy_id_mappings.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.legacy_id_mappings.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.migration_batches (
@@ -108,7 +108,7 @@ COMMENT ON COLUMN iam.migration_batches.result_summary IS '可空；脱敏结果
 COMMENT ON COLUMN iam.migration_batches.started_at IS '可空；批次开始时间。';
 COMMENT ON COLUMN iam.migration_batches.completed_at IS '可空；批次完成时间。';
 COMMENT ON COLUMN iam.migration_batches.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.migration_batches.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.migration_batches.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.migration_batches.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.migration_items (
@@ -145,7 +145,7 @@ COMMENT ON COLUMN iam.migration_items.result_code IS '可空；稳定处理结�
 COMMENT ON COLUMN iam.migration_items.attempt_count IS '处理尝试次数。';
 COMMENT ON COLUMN iam.migration_items.next_attempt_at IS '可空；代码计算的下次重试时间。';
 COMMENT ON COLUMN iam.migration_items.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.migration_items.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.migration_items.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.migration_items.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.migration_change_logs (

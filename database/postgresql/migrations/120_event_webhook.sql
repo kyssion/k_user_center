@@ -63,7 +63,7 @@ COMMENT ON COLUMN iam.webhook_subscriptions.event_filter IS '事件类型和条�
 COMMENT ON COLUMN iam.webhook_subscriptions.state IS '订阅状态。';
 COMMENT ON COLUMN iam.webhook_subscriptions.active_configuration_id IS '可空；逻辑引用 iam.configuration_versions.id。';
 COMMENT ON COLUMN iam.webhook_subscriptions.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.webhook_subscriptions.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.webhook_subscriptions.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.webhook_subscriptions.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.webhook_signing_keys (
@@ -92,12 +92,13 @@ COMMENT ON COLUMN iam.webhook_signing_keys.state IS '签名 Key 关系状态。'
 COMMENT ON COLUMN iam.webhook_signing_keys.valid_from IS '开始签名或验证时间。';
 COMMENT ON COLUMN iam.webhook_signing_keys.valid_until IS '停止验证时间。';
 COMMENT ON COLUMN iam.webhook_signing_keys.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.webhook_signing_keys.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.webhook_signing_keys.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.webhook_signing_keys.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.webhook_deliveries (
     id uuid NOT NULL,
     delivery_id uuid NOT NULL,
+    event_source_code varchar(100) NOT NULL,
     event_id uuid NOT NULL,
     event_type varchar(160) NOT NULL,
     subscription_id uuid NOT NULL,
@@ -109,14 +110,16 @@ CREATE TABLE iam.webhook_deliveries (
     final_result varchar(80),
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     completed_at timestamptz,
-    CONSTRAINT pk_webhook_deliveries PRIMARY KEY (id, created_at),
+    CONSTRAINT pk_webhook_deliveries PRIMARY KEY (id, delivery_id),
+    CONSTRAINT uq_webhook_deliveries_delivery_id UNIQUE (delivery_id),
     CONSTRAINT ck_webhook_delivery_schema CHECK (payload_schema_version > 0),
     CONSTRAINT ck_webhook_delivery_attempt CHECK (attempt_count >= 0)
-) PARTITION BY RANGE (created_at);
-COMMENT ON TABLE iam.webhook_deliveries IS '单个事件到订阅的投递任务；按 created_at 月度分区，签名、重试、退避和终态由 EVENT 代码维护。';
+) PARTITION BY HASH (delivery_id);
+COMMENT ON TABLE iam.webhook_deliveries IS '单个事件到订阅的投递任务；按 delivery_id Hash 分区并由数据库保证投递 ID 全局唯一，签名、重试、退避和终态由 EVENT 代码维护。';
 COMMENT ON COLUMN iam.webhook_deliveries.id IS '应用生成的记录 UUIDv7。';
-COMMENT ON COLUMN iam.webhook_deliveries.delivery_id IS '对外追踪的全局投递 UUID；跨分区唯一性由代码保证。';
-COMMENT ON COLUMN iam.webhook_deliveries.event_id IS '逻辑引用 iam.outbox_events.event_id 或事件总线事件 ID。';
+COMMENT ON COLUMN iam.webhook_deliveries.delivery_id IS '对外追踪的全局投递 UUID；数据库全局唯一。';
+COMMENT ON COLUMN iam.webhook_deliveries.event_source_code IS '稳定事件来源代码；区分本库 Outbox 与外部事件总线，合法值和来源注册由 EVENT 代码维护。';
+COMMENT ON COLUMN iam.webhook_deliveries.event_id IS '按 event_source_code 逻辑引用 iam.outbox_events.event_id 或外部事件总线事件 ID。';
 COMMENT ON COLUMN iam.webhook_deliveries.event_type IS '事件类型。';
 COMMENT ON COLUMN iam.webhook_deliveries.subscription_id IS '逻辑引用 iam.webhook_subscriptions.id。';
 COMMENT ON COLUMN iam.webhook_deliveries.payload_schema_version IS '投递载荷事件 Schema 版本。';
@@ -125,8 +128,9 @@ COMMENT ON COLUMN iam.webhook_deliveries.state IS '投递状态。';
 COMMENT ON COLUMN iam.webhook_deliveries.attempt_count IS 'HTTP 投递尝试次数。';
 COMMENT ON COLUMN iam.webhook_deliveries.next_attempt_at IS '可空；代码计算的下次重试时间。';
 COMMENT ON COLUMN iam.webhook_deliveries.final_result IS '可空；终态结果码。';
-COMMENT ON COLUMN iam.webhook_deliveries.created_at IS '数据库插入时间和月度分区键。';
+COMMENT ON COLUMN iam.webhook_deliveries.created_at IS '数据库插入时间；用于队列排序、审计和归档查询。';
 COMMENT ON COLUMN iam.webhook_deliveries.completed_at IS '可空；进入终态时间。';
+COMMENT ON CONSTRAINT uq_webhook_deliveries_delivery_id ON iam.webhook_deliveries IS '保证投递 ID 在数据库内全局唯一并可被尝试事实稳定引用；因此按 delivery_id Hash 分区。';
 
 CREATE TABLE iam.webhook_delivery_attempts (
     id uuid NOT NULL,
@@ -192,7 +196,7 @@ COMMENT ON COLUMN iam.event_replay_requests.operation_id IS '逻辑引用 iam.op
 COMMENT ON COLUMN iam.event_replay_requests.state IS '回放请求状态。';
 COMMENT ON COLUMN iam.event_replay_requests.max_event_count IS '批准的最大事件数量。';
 COMMENT ON COLUMN iam.event_replay_requests.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.event_replay_requests.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.event_replay_requests.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.event_replay_requests.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.consumer_checkpoints (
@@ -218,7 +222,7 @@ COMMENT ON COLUMN iam.consumer_checkpoints.last_event_id IS '可空；最近提�
 COMMENT ON COLUMN iam.consumer_checkpoints.aggregate_version IS '可空；最近处理的聚合版本。';
 COMMENT ON COLUMN iam.consumer_checkpoints.security_watermark IS '可空；最近应用的撤销或安全水位。';
 COMMENT ON COLUMN iam.consumer_checkpoints.checkpoint IS '消息系统专用检查点，不由数据库解释。';
-COMMENT ON COLUMN iam.consumer_checkpoints.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.consumer_checkpoints.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.consumer_checkpoints.row_version IS '乐观锁版本。';
 
 CREATE INDEX ix_webhook_subscriptions_owner ON iam.webhook_subscriptions (owner_type, owner_id, state);

@@ -64,25 +64,25 @@ END
 $runtime_permission_reset$;
 
 -- 跨领域技术表能力。iam_app_rw 只供领域写角色继承，禁止直接配置为登录身份。
-GRANT SELECT, INSERT, UPDATE ON
+GRANT SELECT, INSERT ON
     iam.idempotency_records, iam.operations, iam.operation_steps, iam.inbox_messages
 TO iam_app_rw;
 GRANT SELECT, INSERT ON iam.outbox_events TO iam_app_rw;
 
 -- ID：标识密文读取与领域写入拆分。
-GRANT SELECT, INSERT, UPDATE ON
+GRANT SELECT, INSERT ON
     iam.global_users, iam.user_subjects, iam.identifier_claims,
     iam.identifier_bindings, iam.user_identities, iam.user_aliases
 TO iam_id_rw;
-GRANT INSERT, UPDATE ON iam.identifiers TO iam_id_rw;
+GRANT INSERT ON iam.identifiers TO iam_id_rw;
 GRANT SELECT ON iam.identifiers TO iam_identifier_reader;
 
 -- AUTH：历史/尝试事实仅追加；秘密读取由 iam_auth_secret_reader 提供。
-GRANT SELECT, INSERT, UPDATE ON
+GRANT SELECT, INSERT ON
     iam.authenticators, iam.recovery_code_batches, iam.login_transactions,
     iam.login_transaction_steps, iam.authentication_contexts
 TO iam_auth_rw;
-GRANT INSERT, UPDATE ON iam.credential_materials, iam.recovery_codes, iam.auth_challenges TO iam_auth_rw;
+GRANT INSERT ON iam.credential_materials, iam.recovery_codes, iam.auth_challenges TO iam_auth_rw;
 GRANT INSERT ON iam.password_history TO iam_auth_rw;
 GRANT SELECT, INSERT ON iam.authentication_attempts TO iam_auth_rw;
 GRANT SELECT ON
@@ -90,19 +90,19 @@ GRANT SELECT ON
 TO iam_auth_secret_reader;
 
 -- PLT / TENANT。
-GRANT SELECT, INSERT, UPDATE ON iam.applications, iam.resource_quotas TO iam_plt_rw;
+GRANT SELECT, INSERT ON iam.applications, iam.resource_quotas TO iam_plt_rw;
 GRANT SELECT, INSERT ON iam.usage_records TO iam_plt_rw;
-GRANT SELECT, INSERT, UPDATE ON
+GRANT SELECT, INSERT ON
     iam.business_lines, iam.tenants, iam.tenant_domains, iam.organizations,
     iam.memberships, iam.invitations, iam.groups, iam.group_members
 TO iam_tenant_rw;
 
 -- OAP：授权码和 Token 摘要读取与写入拆分。
-GRANT SELECT, INSERT, UPDATE ON
+GRANT SELECT, INSERT ON
     iam.oauth_clients, iam.api_resources, iam.oauth_scopes,
     iam.authorization_grants, iam.token_families
 TO iam_oap_rw;
-GRANT INSERT, UPDATE ON
+GRANT INSERT ON
     iam.authorization_codes, iam.refresh_token_instances, iam.access_token_records
 TO iam_oap_rw;
 GRANT SELECT ON
@@ -110,95 +110,82 @@ GRANT SELECT ON
 TO iam_token_secret_reader;
 
 -- SESSION：撤销记录是仅追加事实。
-GRANT SELECT, INSERT, UPDATE ON iam.devices, iam.sessions, iam.session_participants TO iam_session_rw;
+GRANT SELECT, INSERT ON iam.devices, iam.sessions, iam.session_participants TO iam_session_rw;
 GRANT SELECT, INSERT ON iam.revocation_entries TO iam_session_rw;
 
 -- PROFILE。
-GRANT SELECT, INSERT, UPDATE ON
+GRANT SELECT, INSERT ON
     iam.user_profiles, iam.profile_documents, iam.identity_assurance_assertions
 TO iam_profile_rw;
 
 -- PRIV：不可变内容/事实只允许 INSERT；版本发布元数据使用列级 CAS 更新。
 GRANT SELECT, INSERT ON iam.agreement_versions TO iam_priv_rw;
-GRANT UPDATE (state, published_at, effective_at, retired_at, row_version)
-    ON iam.agreement_versions TO iam_priv_rw;
 GRANT SELECT, INSERT ON iam.agreement_acceptances, iam.consents, iam.deletion_proofs TO iam_priv_rw;
-GRANT SELECT, INSERT, UPDATE ON
+GRANT SELECT, INSERT ON
     iam.consent_aggregates, iam.privacy_requests, iam.legal_holds, iam.data_export_artifacts
 TO iam_priv_rw;
 
 -- AUTHZ：策略载荷和决策事实不可修改；发布元数据使用列级 CAS 更新。
-GRANT SELECT, INSERT, UPDATE ON
+GRANT SELECT, INSERT ON
     iam.permissions, iam.roles, iam.role_permissions, iam.user_role_assignments,
     iam.group_role_assignments, iam.machine_role_assignments, iam.data_scope_definitions,
     iam.policy_bindings, iam.relationship_tuples
 TO iam_authz_rw;
 GRANT SELECT, INSERT ON iam.policy_versions TO iam_authz_rw;
-GRANT UPDATE (state, published_at, row_version) ON iam.policy_versions TO iam_authz_rw;
 GRANT SELECT, INSERT ON iam.authorization_decisions TO iam_authz_rw;
 
 -- FED。
-GRANT SELECT, INSERT, UPDATE ON
+GRANT SELECT, INSERT ON
     iam.identity_providers, iam.directory_connectors, iam.directory_sync_cursors,
     iam.directory_sync_batches, iam.directory_object_mappings
 TO iam_fed_rw;
 
 -- RISK：原始信号、评估及其输入关系是仅追加事实。
 GRANT SELECT, INSERT ON iam.risk_signals, iam.risk_assessments, iam.risk_assessment_signals TO iam_risk_rw;
-GRANT SELECT, INSERT, UPDATE ON
+GRANT SELECT, INSERT ON
     iam.risk_cases, iam.security_signals, iam.restriction_entries, iam.risk_entity_links
 TO iam_risk_rw;
 
 -- MACHINE：凭证读取拆分；信任包内容和证明事实不可修改。
-GRANT SELECT, INSERT, UPDATE ON iam.machine_principals, iam.delegations TO iam_machine_rw;
-GRANT INSERT, UPDATE ON iam.machine_credentials TO iam_machine_rw;
+GRANT SELECT, INSERT ON iam.machine_principals, iam.delegations TO iam_machine_rw;
+GRANT INSERT ON iam.machine_credentials TO iam_machine_rw;
 GRANT SELECT ON iam.machine_credentials TO iam_machine_secret_reader;
 GRANT SELECT, INSERT ON iam.workload_trust_bundle_versions TO iam_machine_rw;
-GRANT UPDATE (state, published_at, row_version)
-    ON iam.workload_trust_bundle_versions TO iam_machine_rw;
 GRANT SELECT, INSERT ON iam.workload_attestations TO iam_machine_rw;
 
 -- CTRL：审批动作和发布项仅追加；配置内容不可修改。
-GRANT SELECT, INSERT, UPDATE ON
+GRANT SELECT, INSERT ON
     iam.approval_cases, iam.configuration_releases, iam.security_exceptions
 TO iam_ctrl_rw;
 GRANT SELECT, INSERT ON iam.approval_actions, iam.configuration_release_items TO iam_ctrl_rw;
 GRANT SELECT, INSERT ON iam.configuration_versions TO iam_ctrl_rw;
-GRANT UPDATE (state, approved_by_case_id, published_at, row_version)
-    ON iam.configuration_versions TO iam_ctrl_rw;
 
 -- KEY：JWKS 内容由不可变 Release/Key 关系表达，仅生命周期元数据可更新。
-GRANT SELECT, INSERT, UPDATE ON iam.cryptographic_keys, iam.certificates TO iam_key_rw;
+GRANT SELECT, INSERT ON iam.cryptographic_keys, iam.certificates TO iam_key_rw;
 GRANT SELECT, INSERT ON iam.jwks_releases, iam.jwks_release_keys TO iam_key_rw;
-GRANT UPDATE (state, published_at, active_from, retired_at, row_version)
-    ON iam.jwks_releases TO iam_key_rw;
 
 -- EVENT：Schema 内容和投递尝试不可修改；Endpoint 读取拆分。
 GRANT SELECT, INSERT ON iam.event_schema_versions TO iam_event_rw;
-GRANT UPDATE (approval_case_id, state, published_at, row_version)
-    ON iam.event_schema_versions TO iam_event_rw;
-GRANT INSERT, UPDATE ON iam.webhook_subscriptions TO iam_event_rw;
+GRANT INSERT ON iam.webhook_subscriptions TO iam_event_rw;
 GRANT SELECT ON iam.webhook_subscriptions TO iam_delivery_secret_reader;
-GRANT SELECT, INSERT, UPDATE ON
+GRANT SELECT, INSERT ON
     iam.webhook_signing_keys, iam.webhook_deliveries,
     iam.event_replay_requests, iam.consumer_checkpoints
 TO iam_event_rw;
 GRANT SELECT, INSERT ON iam.webhook_delivery_attempts TO iam_event_rw;
 
 -- MSG：模板内容和投递尝试不可修改；消息目标读取拆分。
-GRANT SELECT, INSERT, UPDATE ON
+GRANT SELECT, INSERT ON
     iam.message_providers, iam.contact_reachability, iam.message_suppressions
 TO iam_msg_rw;
 GRANT SELECT, INSERT ON iam.message_template_versions TO iam_msg_rw;
-GRANT UPDATE (approval_case_id, state, published_at, row_version)
-    ON iam.message_template_versions TO iam_msg_rw;
-GRANT INSERT, UPDATE ON iam.message_requests TO iam_msg_rw;
+GRANT INSERT ON iam.message_requests TO iam_msg_rw;
 GRANT SELECT ON iam.message_requests TO iam_delivery_secret_reader;
 GRANT SELECT, INSERT ON iam.message_delivery_attempts TO iam_msg_rw;
 
 -- MIG：迁移原文读取拆分；Change Log 是仅追加事实。
-GRANT SELECT, INSERT, UPDATE ON iam.legacy_systems, iam.migration_batches, iam.migration_items TO iam_mig_rw;
-GRANT INSERT, UPDATE ON iam.legacy_id_mappings TO iam_mig_rw;
+GRANT SELECT, INSERT ON iam.legacy_systems, iam.migration_batches, iam.migration_items TO iam_mig_rw;
+GRANT INSERT ON iam.legacy_id_mappings TO iam_mig_rw;
 GRANT INSERT ON iam.migration_change_logs TO iam_mig_rw;
 GRANT SELECT ON iam.legacy_id_mappings, iam.migration_change_logs TO iam_migration_secret_reader;
 
@@ -207,13 +194,13 @@ GRANT SELECT ON
     iam.event_schema_versions, iam.webhook_signing_keys,
     iam.message_providers, iam.message_template_versions, iam.legacy_systems
 TO iam_ops;
-GRANT SELECT, INSERT, UPDATE ON
+GRANT SELECT, INSERT ON
     iam.operations, iam.operation_steps, iam.outbox_events, iam.inbox_messages,
     iam.directory_sync_cursors, iam.directory_sync_batches,
     iam.migration_batches, iam.migration_items,
     iam.webhook_deliveries, iam.event_replay_requests, iam.consumer_checkpoints
 TO iam_ops;
-GRANT INSERT, UPDATE ON iam.message_requests TO iam_ops;
+GRANT INSERT ON iam.message_requests TO iam_ops;
 GRANT SELECT, INSERT ON iam.webhook_delivery_attempts, iam.message_delivery_attempts TO iam_ops;
 GRANT INSERT ON iam.migration_change_logs TO iam_ops;
 

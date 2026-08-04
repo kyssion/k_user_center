@@ -51,7 +51,9 @@ BEGIN
     -- iam_app_rw 只承载技术表，不得直接扩散到领域权威表。
     IF NOT has_table_privilege('iam_app_rw', 'iam.idempotency_records', 'SELECT')
        OR NOT has_table_privilege('iam_app_rw', 'iam.idempotency_records', 'INSERT')
-       OR NOT has_table_privilege('iam_app_rw', 'iam.idempotency_records', 'UPDATE')
+       OR has_table_privilege('iam_app_rw', 'iam.idempotency_records', 'UPDATE')
+       OR NOT has_column_privilege('iam_app_rw', 'iam.idempotency_records', 'state', 'UPDATE')
+       OR has_column_privilege('iam_app_rw', 'iam.idempotency_records', 'request_hash', 'UPDATE')
        OR NOT has_table_privilege('iam_app_rw', 'iam.outbox_events', 'INSERT') THEN
         errors := array_append(errors, 'iam_app_rw 缺少公共技术表能力');
     END IF;
@@ -64,51 +66,64 @@ BEGIN
     -- 领域正向能力与跨领域隔离抽样。
     IF NOT has_table_privilege('iam_id_rw', 'iam.global_users', 'SELECT')
        OR NOT has_table_privilege('iam_id_rw', 'iam.global_users', 'INSERT')
-       OR NOT has_table_privilege('iam_id_rw', 'iam.global_users', 'UPDATE')
-       OR has_table_privilege('iam_id_rw', 'iam.tenants', 'UPDATE') THEN
+       OR NOT has_column_privilege('iam_id_rw', 'iam.global_users', 'lifecycle_state', 'UPDATE')
+       OR has_column_privilege('iam_id_rw', 'iam.global_users', 'global_user_id', 'UPDATE')
+       OR has_any_column_privilege('iam_id_rw', 'iam.tenants', 'UPDATE') THEN
         errors := array_append(errors, 'iam_id_rw 领域边界错误');
     END IF;
     IF NOT has_table_privilege('iam_tenant_rw', 'iam.memberships', 'SELECT')
        OR NOT has_table_privilege('iam_tenant_rw', 'iam.memberships', 'INSERT')
-       OR NOT has_table_privilege('iam_tenant_rw', 'iam.memberships', 'UPDATE')
+       OR NOT has_column_privilege('iam_tenant_rw', 'iam.memberships', 'state', 'UPDATE')
+       OR has_column_privilege('iam_tenant_rw', 'iam.memberships', 'user_id', 'UPDATE')
        OR has_table_privilege('iam_tenant_rw', 'iam.policy_versions', 'INSERT') THEN
         errors := array_append(errors, 'iam_tenant_rw 领域边界错误');
     END IF;
     IF NOT has_table_privilege('iam_authz_rw', 'iam.roles', 'SELECT')
        OR NOT has_table_privilege('iam_authz_rw', 'iam.roles', 'INSERT')
-       OR NOT has_table_privilege('iam_authz_rw', 'iam.roles', 'UPDATE')
-       OR has_table_privilege('iam_authz_rw', 'iam.configuration_releases', 'UPDATE') THEN
+       OR NOT has_column_privilege('iam_authz_rw', 'iam.roles', 'state', 'UPDATE')
+       OR has_column_privilege('iam_authz_rw', 'iam.roles', 'role_code', 'UPDATE')
+       OR has_any_column_privilege('iam_authz_rw', 'iam.configuration_releases', 'UPDATE') THEN
         errors := array_append(errors, 'iam_authz_rw 领域边界错误');
     END IF;
 
     -- 敏感读取与领域写入必须组合，Reader 自身不可改写。
     IF has_table_privilege('iam_id_rw', 'iam.identifiers', 'SELECT')
        OR NOT has_table_privilege('iam_id_rw', 'iam.identifiers', 'INSERT')
-       OR NOT has_table_privilege('iam_id_rw', 'iam.identifiers', 'UPDATE')
+       OR NOT has_column_privilege('iam_id_rw', 'iam.identifiers', 'verification_state', 'UPDATE')
+       OR has_column_privilege('iam_id_rw', 'iam.identifiers', 'blind_index', 'UPDATE')
        OR NOT has_table_privilege('iam_identifier_reader', 'iam.identifiers', 'SELECT')
        OR has_table_privilege('iam_identifier_reader', 'iam.identifiers', 'INSERT') THEN
         errors := array_append(errors, 'Identifier 敏感读写拆分错误');
     END IF;
     IF has_table_privilege('iam_auth_rw', 'iam.credential_materials', 'SELECT')
        OR NOT has_table_privilege('iam_auth_rw', 'iam.credential_materials', 'INSERT')
-       OR NOT has_table_privilege('iam_auth_rw', 'iam.credential_materials', 'UPDATE')
+       OR NOT has_column_privilege('iam_auth_rw', 'iam.credential_materials', 'usage_counter', 'UPDATE')
+       OR has_column_privilege('iam_auth_rw', 'iam.credential_materials', 'secret_hash', 'UPDATE')
        OR NOT has_table_privilege('iam_auth_secret_reader', 'iam.credential_materials', 'SELECT')
        OR has_table_privilege('iam_auth_secret_reader', 'iam.credential_materials', 'UPDATE') THEN
         errors := array_append(errors, 'AUTH 敏感读写拆分错误');
     END IF;
     IF has_table_privilege('iam_oap_rw', 'iam.access_token_records', 'SELECT')
        OR NOT has_table_privilege('iam_oap_rw', 'iam.access_token_records', 'INSERT')
-       OR NOT has_table_privilege('iam_oap_rw', 'iam.access_token_records', 'UPDATE')
+       OR NOT has_column_privilege('iam_oap_rw', 'iam.access_token_records', 'revoked_at', 'UPDATE')
+       OR has_column_privilege('iam_oap_rw', 'iam.access_token_records', 'token_hash', 'UPDATE')
        OR NOT has_table_privilege('iam_token_secret_reader', 'iam.access_token_records', 'SELECT')
        OR has_table_privilege('iam_token_secret_reader', 'iam.access_token_records', 'UPDATE') THEN
         errors := array_append(errors, 'OAP Token 敏感读写拆分错误');
     END IF;
     IF has_table_privilege('iam_machine_rw', 'iam.machine_credentials', 'SELECT')
+       OR NOT has_column_privilege('iam_machine_rw', 'iam.machine_credentials', 'state', 'UPDATE')
+       OR has_column_privilege('iam_machine_rw', 'iam.machine_credentials', 'fingerprint', 'UPDATE')
        OR NOT has_table_privilege('iam_machine_secret_reader', 'iam.machine_credentials', 'SELECT') THEN
         errors := array_append(errors, 'MACHINE 凭证敏感读写拆分错误');
     END IF;
     IF has_table_privilege('iam_event_rw', 'iam.webhook_subscriptions', 'SELECT')
        OR has_table_privilege('iam_msg_rw', 'iam.message_requests', 'SELECT')
+       OR NOT has_column_privilege('iam_event_rw', 'iam.webhook_deliveries', 'state', 'UPDATE')
+       OR has_column_privilege('iam_event_rw', 'iam.webhook_deliveries', 'event_source_code', 'UPDATE')
+       OR has_column_privilege('iam_event_rw', 'iam.webhook_deliveries', 'payload_digest', 'UPDATE')
+       OR NOT has_column_privilege('iam_msg_rw', 'iam.message_requests', 'state', 'UPDATE')
+       OR has_column_privilege('iam_msg_rw', 'iam.message_requests', 'parameters', 'UPDATE')
        OR NOT has_table_privilege('iam_delivery_secret_reader', 'iam.webhook_subscriptions', 'SELECT')
        OR NOT has_table_privilege('iam_delivery_secret_reader', 'iam.message_requests', 'SELECT') THEN
         errors := array_append(errors, '投递目标敏感读写拆分错误');
@@ -143,6 +158,37 @@ BEGIN
         errors := array_append(errors, '不可变版本内容的列级 UPDATE 边界错误');
     END IF;
 
+    -- 所有运行时写角色都只能获得列级 UPDATE，禁止重新出现整表 UPDATE。
+    FOREACH runtime_role IN ARRAY ARRAY[
+        'iam_app_rw',
+        'iam_id_rw', 'iam_auth_rw', 'iam_plt_rw', 'iam_tenant_rw', 'iam_oap_rw',
+        'iam_session_rw', 'iam_profile_rw', 'iam_priv_rw', 'iam_authz_rw', 'iam_fed_rw',
+        'iam_risk_rw', 'iam_machine_rw', 'iam_ctrl_rw', 'iam_key_rw', 'iam_event_rw',
+        'iam_msg_rw', 'iam_mig_rw', 'iam_ops'
+    ]
+    LOOP
+        IF EXISTS (
+            SELECT 1
+            FROM pg_tables
+            WHERE schemaname = 'iam'
+              AND has_table_privilege(runtime_role, format('%I.%I', schemaname, tablename), 'UPDATE')
+        ) THEN
+            errors := array_append(errors, format('%s 仍持有整表 UPDATE', runtime_role));
+        END IF;
+    END LOOP;
+
+    -- 稳定标识、创建时间、请求摘要和证据内容不得更新；生命周期字段必须可推进。
+    IF has_column_privilege('iam_id_rw', 'iam.user_subjects', 'subject_id', 'UPDATE')
+       OR NOT has_column_privilege('iam_id_rw', 'iam.user_subjects', 'current_subject_slot', 'UPDATE')
+       OR has_column_privilege('iam_profile_rw', 'iam.identity_assurance_assertions', 'evidence_digest', 'UPDATE')
+       OR NOT has_column_privilege('iam_profile_rw', 'iam.identity_assurance_assertions', 'state', 'UPDATE')
+       OR has_column_privilege('iam_oap_rw', 'iam.authorization_codes', 'code_hash', 'UPDATE')
+       OR NOT has_column_privilege('iam_oap_rw', 'iam.authorization_codes', 'state', 'UPDATE')
+       OR has_column_privilege('iam_app_rw', 'iam.operations', 'created_at', 'UPDATE')
+       OR has_column_privilege('iam_app_rw', 'iam.operations', 'request_digest', 'UPDATE') THEN
+        errors := array_append(errors, '稳定标识、请求快照或证据内容的列级 UPDATE 边界错误');
+    END IF;
+
     -- 审计与追加型事实禁止历史改写。
     IF NOT has_table_privilege('iam_audit_writer', 'iam.audit_events', 'INSERT')
        OR has_table_privilege('iam_audit_writer', 'iam.audit_events', 'UPDATE')
@@ -150,15 +196,15 @@ BEGIN
        OR has_table_privilege('iam_app_ro', 'iam.audit_events', 'SELECT') THEN
         errors := array_append(errors, '审计表最小权限错误');
     END IF;
-    IF has_table_privilege('iam_auth_rw', 'iam.authentication_attempts', 'UPDATE')
-       OR has_table_privilege('iam_priv_rw', 'iam.consents', 'UPDATE')
-       OR has_table_privilege('iam_authz_rw', 'iam.authorization_decisions', 'UPDATE')
-       OR has_table_privilege('iam_risk_rw', 'iam.risk_assessments', 'UPDATE')
-       OR has_table_privilege('iam_machine_rw', 'iam.workload_attestations', 'UPDATE')
-       OR has_table_privilege('iam_ctrl_rw', 'iam.approval_actions', 'UPDATE')
-       OR has_table_privilege('iam_event_rw', 'iam.webhook_delivery_attempts', 'UPDATE')
-       OR has_table_privilege('iam_msg_rw', 'iam.message_delivery_attempts', 'UPDATE')
-       OR has_table_privilege('iam_mig_rw', 'iam.migration_change_logs', 'UPDATE') THEN
+    IF has_any_column_privilege('iam_auth_rw', 'iam.authentication_attempts', 'UPDATE')
+       OR has_any_column_privilege('iam_priv_rw', 'iam.consents', 'UPDATE')
+       OR has_any_column_privilege('iam_authz_rw', 'iam.authorization_decisions', 'UPDATE')
+       OR has_any_column_privilege('iam_risk_rw', 'iam.risk_assessments', 'UPDATE')
+       OR has_any_column_privilege('iam_machine_rw', 'iam.workload_attestations', 'UPDATE')
+       OR has_any_column_privilege('iam_ctrl_rw', 'iam.approval_actions', 'UPDATE')
+       OR has_any_column_privilege('iam_event_rw', 'iam.webhook_delivery_attempts', 'UPDATE')
+       OR has_any_column_privilege('iam_msg_rw', 'iam.message_delivery_attempts', 'UPDATE')
+       OR has_any_column_privilege('iam_mig_rw', 'iam.migration_change_logs', 'UPDATE') THEN
         errors := array_append(errors, '追加型事实存在 UPDATE 权限');
     END IF;
 
@@ -185,11 +231,11 @@ BEGIN
     END LOOP;
 
     -- iam_ops 只能操作明确登记的运行队列，不得越权修改权威业务表或读取迁移原文。
-    IF has_table_privilege('iam_ops', 'iam.global_users', 'UPDATE')
-       OR has_table_privilege('iam_ops', 'iam.roles', 'UPDATE')
-       OR has_table_privilege('iam_ops', 'iam.policy_versions', 'UPDATE')
-       OR has_table_privilege('iam_ops', 'iam.configuration_versions', 'UPDATE')
-       OR has_table_privilege('iam_ops', 'iam.approval_cases', 'UPDATE')
+    IF has_any_column_privilege('iam_ops', 'iam.global_users', 'UPDATE')
+       OR has_any_column_privilege('iam_ops', 'iam.roles', 'UPDATE')
+       OR has_any_column_privilege('iam_ops', 'iam.policy_versions', 'UPDATE')
+       OR has_any_column_privilege('iam_ops', 'iam.configuration_versions', 'UPDATE')
+       OR has_any_column_privilege('iam_ops', 'iam.approval_cases', 'UPDATE')
        OR has_table_privilege('iam_ops', 'iam.message_requests', 'SELECT')
        OR has_table_privilege('iam_ops', 'iam.migration_change_logs', 'SELECT') THEN
         errors := array_append(errors, 'iam_ops 越过运行队列边界');
@@ -219,6 +265,7 @@ BEGIN
             IF has_table_privilege(runtime_role, format('%I.%I', child.schema_name, child.table_name), 'SELECT')
                OR has_table_privilege(runtime_role, format('%I.%I', child.schema_name, child.table_name), 'INSERT')
                OR has_table_privilege(runtime_role, format('%I.%I', child.schema_name, child.table_name), 'UPDATE')
+               OR has_any_column_privilege(runtime_role, format('%I.%I', child.schema_name, child.table_name), 'UPDATE')
                OR has_table_privilege(runtime_role, format('%I.%I', child.schema_name, child.table_name), 'DELETE') THEN
                 errors := array_append(errors, format('%s 可直接访问分区 %s.%s', runtime_role, child.schema_name, child.table_name));
             END IF;

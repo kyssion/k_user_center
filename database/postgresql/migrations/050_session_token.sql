@@ -37,7 +37,7 @@ COMMENT ON COLUMN iam.devices.first_seen_at IS '首次观察业务时间。';
 COMMENT ON COLUMN iam.devices.last_seen_at IS '可空；最近观察业务时间。';
 COMMENT ON COLUMN iam.devices.metadata IS '受控设备元数据；禁止保存高熵原始指纹材料。';
 COMMENT ON COLUMN iam.devices.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.devices.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.devices.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.devices.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.sessions (
@@ -94,7 +94,7 @@ COMMENT ON COLUMN iam.sessions.absolute_expires_at IS '代码计算的绝对过�
 COMMENT ON COLUMN iam.sessions.last_seen_at IS '最近会话活动时间；更新节流由代码控制。';
 COMMENT ON COLUMN iam.sessions.revoked_at IS '可空；会话撤销时间。';
 COMMENT ON COLUMN iam.sessions.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.sessions.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.sessions.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.sessions.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.session_participants (
@@ -121,7 +121,7 @@ COMMENT ON COLUMN iam.session_participants.logout_state IS '退出通知状态�
 COMMENT ON COLUMN iam.session_participants.last_logout_result IS '可空；最近退出通知结果码。';
 COMMENT ON COLUMN iam.session_participants.last_notified_at IS '可空；最近通知时间。';
 COMMENT ON COLUMN iam.session_participants.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.session_participants.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.session_participants.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.session_participants.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.authorization_codes (
@@ -196,7 +196,7 @@ COMMENT ON COLUMN iam.authorization_grants.expires_at IS '可空；授权请求�
 COMMENT ON COLUMN iam.authorization_grants.revoked_at IS '可空；撤销时间。';
 COMMENT ON COLUMN iam.authorization_grants.grant_version IS 'Grant 安全版本，用于 Token 失效判断。';
 COMMENT ON COLUMN iam.authorization_grants.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.authorization_grants.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.authorization_grants.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.authorization_grants.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.token_families (
@@ -228,7 +228,7 @@ COMMENT ON COLUMN iam.token_families.family_version IS '家族安全版本。';
 COMMENT ON COLUMN iam.token_families.reuse_detected_at IS '可空；首次检测到旧 Token 重放时间。';
 COMMENT ON COLUMN iam.token_families.expires_at IS '家族绝对过期时间。';
 COMMENT ON COLUMN iam.token_families.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.token_families.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.token_families.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.token_families.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.refresh_token_instances (
@@ -368,4 +368,3 @@ CREATE INDEX ix_authorization_codes_expiry ON iam.authorization_codes (state, ex
 CREATE INDEX ix_authorization_grants_user_client ON iam.authorization_grants (user_id, client_id, state);
 CREATE INDEX ix_token_families_grant ON iam.token_families (grant_id, state);
 CREATE INDEX ix_access_token_subject ON iam.access_token_records (subject_id, issued_at DESC);
-CREATE INDEX ix_revocation_lookup ON iam.revocation_entries (target_type, target_id, effective_at DESC);

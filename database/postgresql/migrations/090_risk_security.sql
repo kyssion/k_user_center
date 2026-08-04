@@ -20,12 +20,13 @@ CREATE TABLE iam.risk_signals (
     retention_until timestamptz,
     occurred_at timestamptz NOT NULL,
     recorded_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT pk_risk_signals PRIMARY KEY (id, occurred_at),
+    CONSTRAINT pk_risk_signals PRIMARY KEY (id, signal_id),
+    CONSTRAINT uq_risk_signals_signal_id UNIQUE (signal_id),
     CONSTRAINT ck_risk_signal_confidence CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1))
-) PARTITION BY RANGE (occurred_at);
-COMMENT ON TABLE iam.risk_signals IS '高容量不可变风险原始信号；按 occurred_at 月度分区，风险模型在代码中运行。';
+) PARTITION BY HASH (signal_id);
+COMMENT ON TABLE iam.risk_signals IS '高容量不可变风险原始信号；按 signal_id Hash 分区并由数据库保证信号 ID 全局唯一，风险模型在代码中运行。';
 COMMENT ON COLUMN iam.risk_signals.id IS '应用生成的记录 UUIDv7。';
-COMMENT ON COLUMN iam.risk_signals.signal_id IS '全局风险信号 UUID；跨分区唯一性由生产者保证。';
+COMMENT ON COLUMN iam.risk_signals.signal_id IS '全局风险信号 UUID；数据库全局唯一。';
 COMMENT ON COLUMN iam.risk_signals.signal_type IS '稳定信号类型代码。';
 COMMENT ON COLUMN iam.risk_signals.subject_type IS '可空；风险主体类型。';
 COMMENT ON COLUMN iam.risk_signals.subject_id IS '可空；风险主体逻辑 ID。';
@@ -37,8 +38,9 @@ COMMENT ON COLUMN iam.risk_signals.confidence IS '可空；0 到 1 的置信度�
 COMMENT ON COLUMN iam.risk_signals.evidence IS '脱敏证据元数据；不得包含凭证或完整 Token。';
 COMMENT ON COLUMN iam.risk_signals.evidence_digest IS '规范化证据 SHA-256 摘要。';
 COMMENT ON COLUMN iam.risk_signals.retention_until IS '可空；信号最晚保留时间，删除前还需校验 Legal Hold。';
-COMMENT ON COLUMN iam.risk_signals.occurred_at IS '信号实际发生时间和月度分区键。';
+COMMENT ON COLUMN iam.risk_signals.occurred_at IS '信号实际发生时间；用于时间窗口计算、调查和归档查询。';
 COMMENT ON COLUMN iam.risk_signals.recorded_at IS '数据库落库时间。';
+COMMENT ON CONSTRAINT uq_risk_signals_signal_id ON iam.risk_signals IS '保证风险信号 ID 在数据库内全局唯一并可被评估关系稳定引用；因此按 signal_id Hash 分区。';
 
 CREATE TABLE iam.risk_assessments (
     id uuid PRIMARY KEY,
@@ -132,7 +134,7 @@ COMMENT ON COLUMN iam.risk_cases.opened_at IS '案件开启时间。';
 COMMENT ON COLUMN iam.risk_cases.due_at IS '可空；处理截止时间。';
 COMMENT ON COLUMN iam.risk_cases.closed_at IS '可空；结案时间。';
 COMMENT ON COLUMN iam.risk_cases.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.risk_cases.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.risk_cases.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.risk_cases.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.security_signals (
@@ -166,7 +168,7 @@ COMMENT ON COLUMN iam.security_signals.effective_at IS '信号生效时间。';
 COMMENT ON COLUMN iam.security_signals.expires_at IS '可空；信号过期时间。';
 COMMENT ON COLUMN iam.security_signals.evidence_digest IS '可空；证据包摘要。';
 COMMENT ON COLUMN iam.security_signals.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.security_signals.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.security_signals.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.security_signals.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.restriction_entries (
@@ -201,7 +203,7 @@ COMMENT ON COLUMN iam.restriction_entries.state IS '限制状态。';
 COMMENT ON COLUMN iam.restriction_entries.effective_at IS '限制生效时间。';
 COMMENT ON COLUMN iam.restriction_entries.expires_at IS '可空；限制失效时间。';
 COMMENT ON COLUMN iam.restriction_entries.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.restriction_entries.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.restriction_entries.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.restriction_entries.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.risk_entity_links (

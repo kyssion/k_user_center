@@ -34,7 +34,7 @@ COMMENT ON COLUMN iam.identity_providers.state IS '身份源状态。';
 COMMENT ON COLUMN iam.identity_providers.active_configuration_id IS '逻辑引用 iam.configuration_versions.id。';
 COMMENT ON COLUMN iam.identity_providers.metadata_digest IS '可空；当前元数据规范化摘要。';
 COMMENT ON COLUMN iam.identity_providers.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.identity_providers.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.identity_providers.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.identity_providers.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.directory_connectors (
@@ -66,7 +66,7 @@ COMMENT ON COLUMN iam.directory_connectors.state IS '连接器状态。';
 COMMENT ON COLUMN iam.directory_connectors.active_configuration_id IS '逻辑引用 iam.configuration_versions.id。';
 COMMENT ON COLUMN iam.directory_connectors.last_success_at IS '可空；最近同步成功时间。';
 COMMENT ON COLUMN iam.directory_connectors.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.directory_connectors.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.directory_connectors.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.directory_connectors.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.directory_sync_cursors (
@@ -92,7 +92,7 @@ COMMENT ON COLUMN iam.directory_sync_cursors.cursor_digest IS '可空；游标�
 COMMENT ON COLUMN iam.directory_sync_cursors.source_version IS '可空；外部源版本或 ETag。';
 COMMENT ON COLUMN iam.directory_sync_cursors.tombstone_watermark IS '可空；删除墓碑消费水位。';
 COMMENT ON COLUMN iam.directory_sync_cursors.last_success_at IS '可空；成功提交该游标的时间。';
-COMMENT ON COLUMN iam.directory_sync_cursors.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.directory_sync_cursors.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.directory_sync_cursors.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.directory_sync_batches (
@@ -136,7 +136,7 @@ COMMENT ON COLUMN iam.directory_sync_batches.result_summary IS '可空；脱敏�
 COMMENT ON COLUMN iam.directory_sync_batches.started_at IS '批次开始时间。';
 COMMENT ON COLUMN iam.directory_sync_batches.completed_at IS '可空；批次完成时间。';
 COMMENT ON COLUMN iam.directory_sync_batches.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.directory_sync_batches.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.directory_sync_batches.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.directory_sync_batches.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.directory_object_mappings (
@@ -169,7 +169,7 @@ COMMENT ON COLUMN iam.directory_object_mappings.mapping_state IS '映射状态�
 COMMENT ON COLUMN iam.directory_object_mappings.last_seen_at IS '外部对象最近观察时间。';
 COMMENT ON COLUMN iam.directory_object_mappings.tombstoned_at IS '可空；外部对象删除墓碑时间。';
 COMMENT ON COLUMN iam.directory_object_mappings.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.directory_object_mappings.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.directory_object_mappings.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.directory_object_mappings.row_version IS '乐观锁版本。';
 
 CREATE INDEX ix_identity_providers_tenant ON iam.identity_providers (tenant_id, state, protocol);

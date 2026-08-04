@@ -27,7 +27,7 @@ COMMENT ON COLUMN iam.permissions.sensitivity IS '权限敏感级别。';
 COMMENT ON COLUMN iam.permissions.description IS '可空；管理员说明。';
 COMMENT ON COLUMN iam.permissions.state IS '权限目录状态。';
 COMMENT ON COLUMN iam.permissions.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.permissions.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.permissions.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.permissions.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.roles (
@@ -57,7 +57,7 @@ COMMENT ON COLUMN iam.roles.description IS '可空；角色说明。';
 COMMENT ON COLUMN iam.roles.state IS '角色状态。';
 COMMENT ON COLUMN iam.roles.role_version IS '角色语义版本。';
 COMMENT ON COLUMN iam.roles.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.roles.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.roles.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.roles.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.role_permissions (
@@ -113,7 +113,7 @@ COMMENT ON COLUMN iam.user_role_assignments.valid_from IS '授权生效时间。
 COMMENT ON COLUMN iam.user_role_assignments.valid_until IS '可空；授权失效时间。';
 COMMENT ON COLUMN iam.user_role_assignments.state IS '授予状态。';
 COMMENT ON COLUMN iam.user_role_assignments.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.user_role_assignments.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.user_role_assignments.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.user_role_assignments.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.group_role_assignments (
@@ -142,7 +142,7 @@ COMMENT ON COLUMN iam.group_role_assignments.valid_from IS '授权生效时间�
 COMMENT ON COLUMN iam.group_role_assignments.valid_until IS '可空；授权失效时间。';
 COMMENT ON COLUMN iam.group_role_assignments.state IS '授予状态。';
 COMMENT ON COLUMN iam.group_role_assignments.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.group_role_assignments.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.group_role_assignments.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.group_role_assignments.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.machine_role_assignments (
@@ -171,7 +171,7 @@ COMMENT ON COLUMN iam.machine_role_assignments.valid_from IS '授权生效时间
 COMMENT ON COLUMN iam.machine_role_assignments.valid_until IS '可空；授权失效时间。';
 COMMENT ON COLUMN iam.machine_role_assignments.state IS '授予状态。';
 COMMENT ON COLUMN iam.machine_role_assignments.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.machine_role_assignments.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.machine_role_assignments.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.machine_role_assignments.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.data_scope_definitions (
@@ -202,7 +202,7 @@ COMMENT ON COLUMN iam.data_scope_definitions.definition IS '数据范围定义�
 COMMENT ON COLUMN iam.data_scope_definitions.definition_digest IS '规范化定义 SHA-256 摘要。';
 COMMENT ON COLUMN iam.data_scope_definitions.state IS '定义状态。';
 COMMENT ON COLUMN iam.data_scope_definitions.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.data_scope_definitions.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.data_scope_definitions.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.data_scope_definitions.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.policy_versions (
@@ -265,7 +265,7 @@ COMMENT ON COLUMN iam.policy_bindings.state IS '绑定状态。';
 COMMENT ON COLUMN iam.policy_bindings.effective_at IS '绑定生效时间。';
 COMMENT ON COLUMN iam.policy_bindings.expires_at IS '可空；绑定失效时间。';
 COMMENT ON COLUMN iam.policy_bindings.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.policy_bindings.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.policy_bindings.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.policy_bindings.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.authorization_decisions (
@@ -295,15 +295,16 @@ CREATE TABLE iam.authorization_decisions (
     latency_ms integer,
     decided_at timestamptz NOT NULL,
     valid_until timestamptz NOT NULL,
-    CONSTRAINT pk_authorization_decisions PRIMARY KEY (id, decided_at),
+    CONSTRAINT pk_authorization_decisions PRIMARY KEY (id, decision_id),
+    CONSTRAINT uq_authorization_decisions_decision_id UNIQUE (decision_id),
     CONSTRAINT ck_authorization_decision_profile_version CHECK (security_profile_version > 0),
     CONSTRAINT ck_authorization_decision_consent_epoch CHECK (consent_epoch IS NULL OR consent_epoch >= 0),
     CONSTRAINT ck_authorization_decision_latency CHECK (latency_ms IS NULL OR latency_ms >= 0),
     CONSTRAINT ck_authorization_decision_validity CHECK (valid_until >= decided_at)
-) PARTITION BY RANGE (decided_at);
-COMMENT ON TABLE iam.authorization_decisions IS 'PDP 授权决策证据；按 decided_at 月度分区，数据库不重算或解释允许、拒绝与 Obligation。';
+) PARTITION BY HASH (decision_id);
+COMMENT ON TABLE iam.authorization_decisions IS 'PDP 授权决策证据；按 decision_id Hash 分区并由数据库保证决策 ID 全局唯一，数据库不重算或解释允许、拒绝与 Obligation。';
 COMMENT ON COLUMN iam.authorization_decisions.id IS '应用生成的记录 UUIDv7。';
-COMMENT ON COLUMN iam.authorization_decisions.decision_id IS '对外追踪的全局决策 UUID；跨分区唯一性由 PDP 保证。';
+COMMENT ON COLUMN iam.authorization_decisions.decision_id IS '对外追踪的全局决策 UUID；数据库全局唯一。';
 COMMENT ON COLUMN iam.authorization_decisions.subject_type IS '决策主体类型。';
 COMMENT ON COLUMN iam.authorization_decisions.subject_id IS '主体逻辑 ID。';
 COMMENT ON COLUMN iam.authorization_decisions.actor_type IS '可空；代理、管理或 Token Exchange 场景中的 Actor 类型。';
@@ -326,8 +327,9 @@ COMMENT ON COLUMN iam.authorization_decisions.context_version_snapshot IS '资�
 COMMENT ON COLUMN iam.authorization_decisions.consent_id IS '可空；以 Consent 为依据时逻辑引用 iam.consents.id。';
 COMMENT ON COLUMN iam.authorization_decisions.consent_epoch IS '可空；决策时适用的 Consent 安全水位。';
 COMMENT ON COLUMN iam.authorization_decisions.latency_ms IS '可空；PDP 非负处理耗时毫秒数。';
-COMMENT ON COLUMN iam.authorization_decisions.decided_at IS '决策时间和月度分区键。';
+COMMENT ON COLUMN iam.authorization_decisions.decided_at IS '决策时间；用于时效、审计和归档查询。';
 COMMENT ON COLUMN iam.authorization_decisions.valid_until IS '本决策和缓存结果最晚可复用时间；是否允许复用仍由 PDP/PEP 代码判断。';
+COMMENT ON CONSTRAINT uq_authorization_decisions_decision_id ON iam.authorization_decisions IS '保证授权决策 ID 在数据库内全局唯一并可被 Token 稳定引用；因此按 decision_id Hash 分区。';
 
 CREATE TABLE iam.relationship_tuples (
     id uuid PRIMARY KEY,
@@ -363,7 +365,7 @@ COMMENT ON COLUMN iam.relationship_tuples.valid_from IS '关系生效时间。';
 COMMENT ON COLUMN iam.relationship_tuples.valid_until IS '可空；关系失效时间。';
 COMMENT ON COLUMN iam.relationship_tuples.state IS '关系状态。';
 COMMENT ON COLUMN iam.relationship_tuples.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.relationship_tuples.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.relationship_tuples.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.relationship_tuples.row_version IS '乐观锁版本。';
 
 CREATE INDEX ix_role_permissions_permission ON iam.role_permissions (permission_id, removed_at);

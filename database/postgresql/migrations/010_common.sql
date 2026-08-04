@@ -26,13 +26,13 @@ COMMENT ON COLUMN iam.idempotency_records.id IS '应用生成的 UUIDv7 内部�
 COMMENT ON COLUMN iam.idempotency_records.caller_scope IS '调用方稳定作用域，由 API 基础设施代码构造并限制长度。';
 COMMENT ON COLUMN iam.idempotency_records.idempotency_key IS '调用方提供的幂等键；不得包含敏感数据。';
 COMMENT ON COLUMN iam.idempotency_records.request_hash IS '规范化请求的 SHA-256 十六进制摘要，用于识别同键不同请求。';
-COMMENT ON COLUMN iam.idempotency_records.operation_id IS '可空；逻辑引用 iam.operations.id，数据库不创建外键，由 OPS 代码校验。';
+COMMENT ON COLUMN iam.idempotency_records.operation_id IS '可空；逻辑引用 iam.operations.id；数据库 FK 校验存在性，OPS 代码校验状态和事务归属。';
 COMMENT ON COLUMN iam.idempotency_records.state IS '幂等处理状态字符串；合法值与转换由 API 代码维护。';
 COMMENT ON COLUMN iam.idempotency_records.response_status IS '可空；首次处理完成后的 HTTP 状态码快照。';
 COMMENT ON COLUMN iam.idempotency_records.response_body IS '可空；可安全复用的响应快照，代码负责脱敏和容量限制。';
 COMMENT ON COLUMN iam.idempotency_records.expires_at IS '幂等记录技术过期时间，由代码按接口策略计算。';
 COMMENT ON COLUMN iam.idempotency_records.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.idempotency_records.updated_at IS '数据库更新时间；更新语句由应用显式刷新。';
+COMMENT ON COLUMN iam.idempotency_records.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.idempotency_records.row_version IS '乐观锁版本；应用使用条件更新并在成功后递增。';
 COMMENT ON CONSTRAINT uq_idempotency_caller_key ON iam.idempotency_records IS '维持同一调用作用域内幂等键唯一。';
 
@@ -87,7 +87,7 @@ COMMENT ON COLUMN iam.operations.result_payload IS '可空；操作结果快照�
 COMMENT ON COLUMN iam.operations.error_code IS '可空；稳定错误码，解释文本由代码和本地化资源提供。';
 COMMENT ON COLUMN iam.operations.expires_at IS '可空；操作等待或查询过期时间，由代码计算。';
 COMMENT ON COLUMN iam.operations.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.operations.updated_at IS '数据库更新时间；应用更新时显式刷新。';
+COMMENT ON COLUMN iam.operations.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.operations.completed_at IS '可空；操作进入终态的业务时间。';
 COMMENT ON COLUMN iam.operations.row_version IS '乐观锁版本。';
 COMMENT ON CONSTRAINT uq_operations_caller_key ON iam.operations IS '保证同一调用作用域和幂等键只绑定一个 Operation。';
@@ -114,7 +114,7 @@ CREATE TABLE iam.operation_steps (
 );
 COMMENT ON TABLE iam.operation_steps IS 'Operation 从属步骤状态和检查点；数据库不执行工作流。';
 COMMENT ON COLUMN iam.operation_steps.id IS '应用生成的步骤 UUIDv7。';
-COMMENT ON COLUMN iam.operation_steps.operation_id IS '逻辑引用 iam.operations.id；数据库不创建外键，由 OPS 仓储校验。';
+COMMENT ON COLUMN iam.operation_steps.operation_id IS '逻辑引用 iam.operations.id；数据库 FK 校验存在性，OPS 仓储校验步骤归属和状态。';
 COMMENT ON COLUMN iam.operation_steps.step_code IS '操作类型内稳定步骤代码。';
 COMMENT ON COLUMN iam.operation_steps.state IS '步骤状态；合法转换由代码维护。';
 COMMENT ON COLUMN iam.operation_steps.attempt_count IS '已执行尝试次数，非负。';
@@ -126,7 +126,7 @@ COMMENT ON COLUMN iam.operation_steps.next_attempt_at IS '可空；代码计算�
 COMMENT ON COLUMN iam.operation_steps.started_at IS '可空；本步骤首次开始业务时间。';
 COMMENT ON COLUMN iam.operation_steps.completed_at IS '可空；本步骤完成业务时间。';
 COMMENT ON COLUMN iam.operation_steps.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.operation_steps.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.operation_steps.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.operation_steps.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.outbox_events (
@@ -247,11 +247,12 @@ CREATE TABLE iam.audit_events (
     attributes jsonb NOT NULL DEFAULT '{}'::jsonb,
     occurred_at timestamptz NOT NULL,
     recorded_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT pk_audit_events PRIMARY KEY (id, recorded_at)
-) PARTITION BY RANGE (recorded_at);
-COMMENT ON TABLE iam.audit_events IS '不可变追加审计事件；按 recorded_at 月度 Range 分区，不依赖外键且禁止应用角色更新或删除。';
-COMMENT ON COLUMN iam.audit_events.id IS '应用生成的审计记录 UUIDv7；与 recorded_at 组成分区主键。';
-COMMENT ON COLUMN iam.audit_events.event_id IS '应用生成的审计事件 ID；全局唯一性由审计写入代码保证。';
+    CONSTRAINT pk_audit_events PRIMARY KEY (id, event_id),
+    CONSTRAINT uq_audit_events_event_id UNIQUE (event_id)
+) PARTITION BY HASH (event_id);
+COMMENT ON TABLE iam.audit_events IS '不可变追加审计事件；按 event_id Hash 分区并由数据库保证事件 ID 全局唯一，禁止应用角色更新或删除。';
+COMMENT ON COLUMN iam.audit_events.id IS '应用生成的审计记录 UUIDv7；与 event_id 组成分区主键。';
+COMMENT ON COLUMN iam.audit_events.event_id IS '应用生成的审计事件 ID；数据库全局唯一。';
 COMMENT ON COLUMN iam.audit_events.actor_type IS '可空；操作者类型，系统自动动作可为空。';
 COMMENT ON COLUMN iam.audit_events.actor_id IS '可空；按 actor_type 逻辑引用主体表，数据库不创建外键。';
 COMMENT ON COLUMN iam.audit_events.subject_type IS '可空；被影响主体类型。';
@@ -269,7 +270,8 @@ COMMENT ON COLUMN iam.audit_events.trace_id IS '可空；跨服务追踪 ID。';
 COMMENT ON COLUMN iam.audit_events.source_ip IS '可空；来源 IP，属于受限个人数据。';
 COMMENT ON COLUMN iam.audit_events.attributes IS '扩展审计属性；代码执行白名单和脱敏。';
 COMMENT ON COLUMN iam.audit_events.occurred_at IS '动作实际发生时间，由代码传入。';
-COMMENT ON COLUMN iam.audit_events.recorded_at IS '数据库落库时间和月度分区键。';
+COMMENT ON COLUMN iam.audit_events.recorded_at IS '数据库落库时间；用于时间范围查询、归档和留存判断。';
+COMMENT ON CONSTRAINT uq_audit_events_event_id ON iam.audit_events IS '保证审计事件 ID 在数据库内全局唯一；因此按 event_id Hash 分区。';
 
 CREATE INDEX ix_idempotency_expiry ON iam.idempotency_records (expires_at);
 CREATE INDEX ix_operations_queue ON iam.operations (state, updated_at);

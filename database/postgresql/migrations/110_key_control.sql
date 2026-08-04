@@ -36,7 +36,7 @@ COMMENT ON COLUMN iam.cryptographic_keys.valid_from IS '验证或加密生效时
 COMMENT ON COLUMN iam.cryptographic_keys.valid_until IS '可空；停止使用或验证的时间。';
 COMMENT ON COLUMN iam.cryptographic_keys.public_material IS '可空；JWK 等公开材料，禁止写入私钥参数。';
 COMMENT ON COLUMN iam.cryptographic_keys.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.cryptographic_keys.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.cryptographic_keys.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.cryptographic_keys.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.certificates (
@@ -71,7 +71,7 @@ COMMENT ON COLUMN iam.certificates.valid_from IS '证书有效期开始。';
 COMMENT ON COLUMN iam.certificates.valid_until IS '证书有效期结束。';
 COMMENT ON COLUMN iam.certificates.revoked_at IS '可空；平台记录的撤销时间。';
 COMMENT ON COLUMN iam.certificates.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.certificates.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.certificates.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.certificates.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.jwks_releases (
@@ -187,7 +187,7 @@ COMMENT ON COLUMN iam.configuration_releases.requested_by_id IS '发布申请者
 COMMENT ON COLUMN iam.configuration_releases.activated_at IS '可空；正式激活时间。';
 COMMENT ON COLUMN iam.configuration_releases.rolled_back_at IS '可空；回滚时间。';
 COMMENT ON COLUMN iam.configuration_releases.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.configuration_releases.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.configuration_releases.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.configuration_releases.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.configuration_release_items (
@@ -242,7 +242,7 @@ COMMENT ON COLUMN iam.security_exceptions.effective_at IS '例外生效时间。
 COMMENT ON COLUMN iam.security_exceptions.expires_at IS '强制到期时间。';
 COMMENT ON COLUMN iam.security_exceptions.closed_at IS '可空；例外提前关闭时间。';
 COMMENT ON COLUMN iam.security_exceptions.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.security_exceptions.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.security_exceptions.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.security_exceptions.row_version IS '乐观锁版本。';
 
 CREATE INDEX ix_cryptographic_keys_owner ON iam.cryptographic_keys (owner_type, owner_id, purpose, state);

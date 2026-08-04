@@ -37,7 +37,7 @@ COMMENT ON COLUMN iam.machine_principals.state IS '机器主体状态。';
 COMMENT ON COLUMN iam.machine_principals.security_epoch IS '机器主体安全水位。';
 COMMENT ON COLUMN iam.machine_principals.expires_at IS '可空；主体计划到期时间。';
 COMMENT ON COLUMN iam.machine_principals.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.machine_principals.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.machine_principals.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.machine_principals.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.machine_credentials (
@@ -79,7 +79,7 @@ COMMENT ON COLUMN iam.machine_credentials.valid_from IS '凭证生效时间。';
 COMMENT ON COLUMN iam.machine_credentials.valid_until IS '凭证失效时间。';
 COMMENT ON COLUMN iam.machine_credentials.last_used_at IS '可空；最近成功使用时间。';
 COMMENT ON COLUMN iam.machine_credentials.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.machine_credentials.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.machine_credentials.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.machine_credentials.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.workload_trust_bundle_versions (
@@ -176,7 +176,7 @@ COMMENT ON COLUMN iam.delegations.valid_from IS '委托生效时间。';
 COMMENT ON COLUMN iam.delegations.valid_until IS '委托失效时间。';
 COMMENT ON COLUMN iam.delegations.reason_code IS '委托原因码。';
 COMMENT ON COLUMN iam.delegations.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.delegations.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.delegations.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.delegations.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.approval_cases (
@@ -218,7 +218,7 @@ COMMENT ON COLUMN iam.approval_cases.expires_at IS '审批请求过期时间。'
 COMMENT ON COLUMN iam.approval_cases.execution_id IS '可空；批准动作执行时生成的全局唯一执行 UUID，用于并发防重和执行绑定。';
 COMMENT ON COLUMN iam.approval_cases.executed_at IS '可空；批准动作实际执行时间。';
 COMMENT ON COLUMN iam.approval_cases.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.approval_cases.updated_at IS '数据库更新时间；应用显式刷新。';
+COMMENT ON COLUMN iam.approval_cases.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
 COMMENT ON COLUMN iam.approval_cases.row_version IS '乐观锁版本。';
 COMMENT ON CONSTRAINT uq_approval_cases_execution_id ON iam.approval_cases IS '数据库保证一个执行标识最多绑定一个审批单；执行资格和状态由代码校验。';
 
