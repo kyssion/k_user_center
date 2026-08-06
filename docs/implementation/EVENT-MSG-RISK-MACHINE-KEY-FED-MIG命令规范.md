@@ -18,7 +18,10 @@
 
 - 代码校验模板版本、变量 Schema、目标规范化、抑制、限速、数据最小化、路由和币种 Allowlist。
 - `request_id` 使用高熵 UUID；调用幂等以 `idempotency_records` 为权威，查询索引用于跨分区定位。
-- 目标密文、模板和参数创建后不可修改；Worker 只更新优先级、计划时间、状态和完成时间。
+- `parameters` 只保存非秘密变量。验证码、Magic Link Token 等投递秘密在事务提交前写入独立短期秘密存储，`message_requests` 只保存非承载型 `delivery_secret_handle` 和不晚于请求过期时间的失效时间；句柄脱离 Worker 身份不能读取秘密。
+- Challenge 摘要、消息请求、Outbox、Audit 和幂等结果同事务提交；短期秘密写入失败时不得提交。事务回滚或消息进入终态后清理短期秘密，重试只能在秘密和请求均未过期时进行。
+- Worker 使用 `iam_ops + iam_sensitive_rw` 读取目标密文和秘密句柄，通过独立身份取回秘密，仅在内存中合并最终渲染上下文；不得写入 `parameters`、Delivery Attempt、供应商响应、日志、事件或审计。
+- 目标密文、模板、非秘密参数和秘密句柄创建后不可修改；Worker 只更新优先级、计划时间、状态和完成时间。
 - 每次供应商调用追加 Delivery Attempt；尝试序号、并发控制、熔断、降级、成本语义和回执解释由代码处理。
 
 ## 4. 风险信号与评估

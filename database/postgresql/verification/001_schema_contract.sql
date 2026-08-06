@@ -87,7 +87,8 @@ BEGIN
             ('authorization_decisions','security_profile_code','NO'),('authorization_decisions','security_profile_version','NO'),
             ('authorization_decisions','context_version_snapshot','NO'),('authorization_decisions','consent_id','YES'),
             ('authorization_decisions','consent_epoch','YES'),('authorization_decisions','valid_until','NO'),
-            ('approval_cases','execution_id','YES'),('event_schema_versions','approval_case_id','YES')
+            ('approval_cases','execution_id','YES'),('event_schema_versions','approval_case_id','YES'),
+            ('message_requests','delivery_secret_handle','YES'),('message_requests','delivery_secret_expires_at','YES')
     )
     SELECT string_agg(format('%I.%I', required.table_name, required.column_name), ', ' ORDER BY required.table_name, required.column_name)
       INTO missing_required_columns
@@ -115,7 +116,8 @@ BEGIN
             ('access_token_records','security_profile_code','NO'),('access_token_records','security_profile_version','NO'),
             ('access_token_records','policy_version_ids','NO'),('authorization_decisions','delegation_chain_snapshot','NO'),
             ('authorization_decisions','security_profile_code','NO'),('authorization_decisions','security_profile_version','NO'),
-            ('authorization_decisions','context_version_snapshot','NO'),('authorization_decisions','valid_until','NO')
+            ('authorization_decisions','context_version_snapshot','NO'),('authorization_decisions','valid_until','NO'),
+            ('message_requests','delivery_secret_handle','YES'),('message_requests','delivery_secret_expires_at','YES')
     )
     SELECT string_agg(format('%I.%I expected %s got %s', required.table_name, required.column_name, required.is_nullable, c.is_nullable), ', ' ORDER BY required.table_name, required.column_name)
       INTO nullable_mismatches

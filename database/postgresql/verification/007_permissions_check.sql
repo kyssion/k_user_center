@@ -40,6 +40,9 @@ BEGIN
         IF NOT pg_has_role('iam_migrator', 'iam_owner', 'MEMBER') THEN
             errors := array_append(errors, 'iam_migrator 未继承 iam_owner');
         END IF;
+        IF NOT has_database_privilege('iam_owner', current_database(), 'CREATE') THEN
+            errors := array_append(errors, 'iam_owner 缺少创建 iam/iam_meta Schema 所需的数据库 CREATE 权限');
+        END IF;
 
         SELECT string_agg(format('%s -> %s', member_role.rolname, granted_role.rolname), ', '
                           ORDER BY member_role.rolname, granted_role.rolname)
@@ -116,6 +119,13 @@ BEGIN
         END IF;
         IF has_column_privilege('iam_app_ro', 'iam.message_requests', 'target_ciphertext', 'SELECT') THEN
             errors := array_append(errors, 'iam_app_ro 可读消息目标密文');
+        END IF;
+        IF has_column_privilege('iam_app_ro', 'iam.message_requests', 'delivery_secret_handle', 'SELECT')
+           OR has_column_privilege('iam_ops', 'iam.message_requests', 'delivery_secret_handle', 'SELECT') THEN
+            errors := array_append(errors, '非敏感角色可读取消息投递秘密句柄');
+        END IF;
+        IF NOT has_column_privilege('iam_sensitive_rw', 'iam.message_requests', 'delivery_secret_handle', 'SELECT') THEN
+            errors := array_append(errors, 'iam_sensitive_rw 缺少消息投递秘密句柄读取权限');
         END IF;
         IF has_table_privilege('iam_app_rw', 'iam.credential_materials', 'SELECT') THEN
             errors := array_append(errors, 'iam_app_rw 可读凭证材料');

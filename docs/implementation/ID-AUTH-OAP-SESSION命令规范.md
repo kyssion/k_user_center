@@ -39,7 +39,7 @@
 
 ## 6. 创建和消费 Challenge `IssueChallenge` / `ConsumeChallenge`
 
-- 创建时校验目的、目标、上下文 Schema、TTL 和最大尝试策略，只保存 Token 摘要。
+- 创建时校验目的、目标、上下文 Schema、TTL 和最大尝试策略，只保存 Token 摘要。需要异步投递时，秘密原值写入独立短期秘密存储，IAM 数据库只在消息请求中保存非承载型句柄和失效时间。
 - 消费时在代码中校验摘要、上下文绑定、主体/Client/Tenant、状态、过期时间和尝试上限。
 - 使用单条条件 UPDATE 匹配 expected version；成功时设置终态与 `consumed_at`，失败和成功都按命令契约记录尝试。
 - 未知、过期和已使用 Token 对外使用防枚举响应；数据库 Check 仅兜底非负计数和基础时间形状。

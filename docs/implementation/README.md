@@ -8,6 +8,7 @@
 
 | 文档 | 范围 |
 |---|---|
+| [代码实施就绪审计](../implementation-readiness/README.md) | 阶段 0 / 阶段 1a 开工判断、整改计划、追踪矩阵与命令规格卡 |
 | [全局持久化与事务规范](./全局持久化与事务规范.md) | 所有命令统一遵守的事务、CAS、幂等、Outbox、Audit、权限、错误和查询契约 |
 | [ID、AUTH、OAP 与 SESSION 命令规范](./ID-AUTH-OAP-SESSION命令规范.md) | 用户、Subject、标识、认证、授权码、Token 和会话 |
 | [TENANT、AUTHZ、PRIV 与 CTRL 命令规范](./TENANT-AUTHZ-PRIV-CTRL命令规范.md) | Membership、邀请、授权事实、Consent、隐私请求、审批和配置发布 |

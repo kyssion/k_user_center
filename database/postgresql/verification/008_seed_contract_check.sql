@@ -12,6 +12,7 @@ DECLARE
     missing_permissions text;
     template_count integer;
     missing_templates text;
+    missing_secure_otp_template boolean;
     event_schema_count integer;
     missing_event_types text;
     invalid_event_schemas text;
@@ -191,7 +192,7 @@ BEGIN
         SELECT 'TEMPLATE', template_code || ':' || channel || ':' || locale, state
           FROM iam.message_template_versions
          WHERE id::text LIKE '40000000-%'
-           AND (state NOT IN ('DRAFT','PUBLISHED') OR (state = 'PUBLISHED' AND approval_case_id IS NULL))
+           AND (state NOT IN ('DRAFT','PUBLISHED','RETIRED') OR (state = 'PUBLISHED' AND approval_case_id IS NULL))
         UNION ALL
         SELECT 'EVENT_SCHEMA', event_type, state
           FROM iam.event_schema_versions
@@ -252,6 +253,18 @@ BEGIN
            AND t.id::text LIKE '40000000-%'
      );
 
+    SELECT NOT EXISTS (
+        SELECT 1
+          FROM iam.message_template_versions t
+         WHERE t.id = '40000000-0000-0000-0000-000000000014'::uuid
+           AND t.template_code = 'LOGIN_OTP'
+           AND t.channel = 'SMS'
+           AND t.locale = 'zh-CN'
+           AND t.version = 2
+           AND t.variable_schema #>> '{properties,code,x-storage}' = 'EPHEMERAL_SECRET'
+           AND t.state = 'DRAFT'
+    ) INTO missing_secure_otp_template;
+
     SELECT count(*) INTO event_schema_count
       FROM iam.event_schema_versions
      WHERE id::text LIKE '50000000-%';
@@ -297,12 +310,12 @@ BEGIN
 
     IF missing_profiles IS NOT NULL OR invalid_profiles IS NOT NULL OR missing_slos IS NOT NULL OR missing_durations IS NOT NULL
        OR invalid_baseline OR invalid_seed_state IS NOT NULL OR permission_count <> 48 OR missing_permissions IS NOT NULL
-       OR template_count <> 13 OR missing_templates IS NOT NULL
+       OR template_count <> 14 OR missing_templates IS NOT NULL OR missing_secure_otp_template
        OR event_schema_count <> 28 OR missing_event_types IS NOT NULL OR invalid_event_schemas IS NOT NULL THEN
-        RAISE EXCEPTION 'Seed 契约失败：missing_profiles=%, invalid_profiles=%, missing_slos=%, missing_durations=%, invalid_baseline=%, invalid_state=%, permissions=%, missing_permissions=%, templates=%, missing_templates=%, event_schemas=%, missing_event_types=%, invalid_event_schemas=%',
+        RAISE EXCEPTION 'Seed 契约失败：missing_profiles=%, invalid_profiles=%, missing_slos=%, missing_durations=%, invalid_baseline=%, invalid_state=%, permissions=%, missing_permissions=%, templates=%, missing_templates=%, missing_secure_otp=%, event_schemas=%, missing_event_types=%, invalid_event_schemas=%',
             coalesce(missing_profiles, '<none>'), coalesce(invalid_profiles, '<none>'), coalesce(missing_slos, '<none>'),
             coalesce(missing_durations, '<none>'), invalid_baseline, coalesce(invalid_seed_state, '<none>'),
-            permission_count, coalesce(missing_permissions, '<none>'), template_count, coalesce(missing_templates, '<none>'),
+            permission_count, coalesce(missing_permissions, '<none>'), template_count, coalesce(missing_templates, '<none>'), missing_secure_otp_template,
             event_schema_count, coalesce(missing_event_types, '<none>'), coalesce(invalid_event_schemas, '<none>');
     END IF;
 END

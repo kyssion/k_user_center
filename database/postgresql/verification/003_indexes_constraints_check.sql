@@ -5,6 +5,8 @@ DECLARE
     missing_primary_keys text;
     missing_constraints text;
     missing_indexes text;
+    invalid_role_permission_contract text;
+    invalid_delivery_secret_contract text;
     partition_parent_count integer;
     parent_without_child text;
     invalid_partition_contract text;
@@ -38,7 +40,8 @@ BEGIN
         ('legacy_id_mappings','uq_legacy_external_mapping'),('auth_challenges','uq_auth_challenge_token'),
         ('refresh_token_instances','uq_refresh_token_hash'),('refresh_token_instances','uq_refresh_token_sequence'),
         ('authorization_codes','uq_authorization_codes_hash'),
-        ('machine_credentials','uq_machine_credential_replacement'),('authorization_grants','ck_authorization_grants_granted_at')
+        ('machine_credentials','uq_machine_credential_replacement'),('authorization_grants','ck_authorization_grants_granted_at'),
+        ('message_requests','ck_message_request_no_secret_parameters'),('message_requests','ck_message_request_delivery_secret')
       ) AS required(table_name, constraint_name)
      WHERE NOT EXISTS (
         SELECT 1
@@ -73,7 +76,8 @@ BEGIN
         ('ix_configuration_release_items_version'),('ix_identifiers_key'),('ix_credential_materials_key'),
         ('ix_data_export_artifacts_key'),('ix_jwks_release_keys_key'),('ix_certificates_key'),
         ('ix_machine_credentials_key'),('ix_machine_credentials_certificate'),('ix_webhook_signing_keys_key'),
-        ('ix_outbox_recorded_brin'),('ix_inbox_received_brin')
+        ('ix_outbox_recorded_brin'),('ix_inbox_received_brin'),
+        ('uq_role_permissions_current'),('ix_role_permissions_role_history')
       ) AS required(index_name)
      WHERE NOT EXISTS (
         SELECT 1
@@ -81,6 +85,48 @@ BEGIN
           JOIN pg_namespace n ON n.oid = c.relnamespace
          WHERE n.nspname = 'iam' AND c.relkind = 'i' AND c.relname = required.index_name
      );
+
+    SELECT CASE
+        WHEN EXISTS (
+            SELECT 1
+              FROM pg_constraint constraint_item
+              JOIN pg_class table_item ON table_item.oid = constraint_item.conrelid
+              JOIN pg_namespace namespace ON namespace.oid = table_item.relnamespace
+             WHERE namespace.nspname = 'iam'
+               AND table_item.relname = 'role_permissions'
+               AND constraint_item.conname = 'uq_role_permissions'
+        ) THEN '旧 uq_role_permissions 仍存在，撤销后无法追加重新授予关系'
+        WHEN NOT EXISTS (
+            SELECT 1
+              FROM pg_index index_item
+              JOIN pg_class index_relation ON index_relation.oid = index_item.indexrelid
+              JOIN pg_class table_relation ON table_relation.oid = index_item.indrelid
+              JOIN pg_namespace namespace ON namespace.oid = table_relation.relnamespace
+             WHERE namespace.nspname = 'iam'
+               AND table_relation.relname = 'role_permissions'
+               AND index_relation.relname = 'uq_role_permissions_current'
+               AND index_item.indisunique
+               AND index_item.indnkeyatts = 2
+               AND pg_get_indexdef(index_item.indexrelid, 1, true) = 'role_id'
+               AND pg_get_indexdef(index_item.indexrelid, 2, true) = 'permission_id'
+               AND pg_get_expr(index_item.indpred, index_item.indrelid) LIKE '%removed_at IS NULL%'
+        ) THEN 'uq_role_permissions_current 不是 role_id/permission_id 的当前关系部分唯一索引'
+    END INTO invalid_role_permission_contract;
+
+    SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+          FROM pg_constraint constraint_item
+          JOIN pg_class table_item ON table_item.oid = constraint_item.conrelid
+          JOIN pg_namespace namespace ON namespace.oid = table_item.relnamespace
+         WHERE namespace.nspname = 'iam'
+           AND table_item.relname = 'message_requests'
+           AND constraint_item.conname = 'ck_message_request_delivery_secret'
+           AND pg_get_constraintdef(constraint_item.oid) LIKE '%delivery_secret_handle IS NULL%'
+           AND pg_get_constraintdef(constraint_item.oid) LIKE '%delivery_secret_expires_at IS NULL%'
+           AND pg_get_constraintdef(constraint_item.oid) LIKE '%delivery_secret_expires_at > created_at%'
+           AND pg_get_constraintdef(constraint_item.oid) LIKE '%delivery_secret_expires_at <= expires_at%'
+    ) THEN 'ck_message_request_delivery_secret 未完整约束句柄成对和有效期' END
+      INTO invalid_delivery_secret_contract;
 
     SELECT count(*) INTO partition_parent_count
       FROM pg_partitioned_table p
@@ -158,10 +204,12 @@ BEGIN
         default_partition_rows := default_partition_rows + default_count;
     END LOOP;
 
-    IF missing_primary_keys IS NOT NULL OR missing_constraints IS NOT NULL OR missing_indexes IS NOT NULL OR partition_parent_count <> 13
+    IF missing_primary_keys IS NOT NULL OR missing_constraints IS NOT NULL OR missing_indexes IS NOT NULL
+       OR invalid_role_permission_contract IS NOT NULL OR invalid_delivery_secret_contract IS NOT NULL OR partition_parent_count <> 13
        OR parent_without_child IS NOT NULL OR invalid_partition_contract IS NOT NULL OR missing_future_partitions IS NOT NULL OR default_partition_rows <> 0 THEN
-        RAISE EXCEPTION '索引约束门禁失败：missing_pk=%, missing_unique=%, missing_indexes=%, partition_parents=%, no_child=%, invalid_partition=%, missing_future=%, default_rows=%',
+        RAISE EXCEPTION '索引约束门禁失败：missing_pk=%, missing_unique=%, missing_indexes=%, invalid_role_permission=%, invalid_delivery_secret=%, partition_parents=%, no_child=%, invalid_partition=%, missing_future=%, default_rows=%',
             coalesce(missing_primary_keys, '<none>'), coalesce(missing_constraints, '<none>'), coalesce(missing_indexes, '<none>'),
+            coalesce(invalid_role_permission_contract, '<none>'), coalesce(invalid_delivery_secret_contract, '<none>'),
             partition_parent_count, coalesce(parent_without_child, '<none>'), coalesce(invalid_partition_contract, '<none>'),
             coalesce(missing_future_partitions, '<none>'), default_partition_rows;
     END IF;

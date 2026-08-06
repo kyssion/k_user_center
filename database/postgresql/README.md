@@ -30,6 +30,7 @@
 - Seed 使用稳定业务键和内容摘要保证幂等；同键内容不一致时执行失败，禁止静默覆盖或忽略漂移。
 - `configuration_versions`、事件 Schema 和消息模板 Seed 默认 `DRAFT`，不得作为已发布配置直接读取。
 - 运行时登录身份按最小技术职责组合组角色：普通持久化读写使用 `iam_app_rw + iam_audit_writer`；AUTH/OAP 对 Challenge、恢复码、授权码和 Token 元数据执行读改写时使用 `iam_app_rw + iam_sensitive_rw + iam_audit_writer`；队列和投递 Worker 使用 `iam_ops`，只有确需读取密文时才叠加 `iam_sensitive_rw`。部署清单必须显式登记组合，运行时禁止继承 `iam_owner` 或 `iam_migrator`；这些组合不代替代码中的业务授权、租户校验和状态转换。
+- 验证码和 Magic Link Token 不写入 `message_requests.parameters`；消息请求只保存外部短期秘密存储的非承载型 `delivery_secret_handle`，消息 Worker 使用 `iam_ops + iam_sensitive_rw` 和独立秘密存储身份在内存中完成模板渲染。
 - 关键读取路径必须符合 `docs/database/查询与索引契约.md`；索引不允许替代 Tenant、Owner、状态、过期时间或权限条件。
 
 ## 本地执行示例
