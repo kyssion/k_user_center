@@ -10,7 +10,6 @@ $outputPath = Join-Path $RepositoryRoot 'docs/database/generated'
 $traceabilityPath = Join-Path $RepositoryRoot 'docs/database/需求编号与数据库持久化覆盖索引.md'
 $logicalRelationPath = Join-Path $RepositoryRoot 'docs/database/逻辑关系与非数据库校验清单.md'
 $businessModelBoundaryPath = Join-Path $RepositoryRoot 'docs/database/业务模型与持久化边界清单.md'
-$domainDocumentationPath = Join-Path $RepositoryRoot 'docs/database/domains'
 $capabilityMapPath = Join-Path $RepositoryRoot 'docs/能力地图.md'
 $blueprintPath = Join-Path $RepositoryRoot 'docs/统一身份与访问平台建设与验收蓝图.md'
 $domainFiles = Get-ChildItem -LiteralPath $migrationPath -Filter '*.sql' |
@@ -109,14 +108,22 @@ $tableDomainUsage = @{}
 foreach ($table in $tables) {
     $tableDomainUsage[$table.Name] = [System.Collections.Generic.List[string]]::new()
 }
-foreach ($domainDocument in (Get-ChildItem -LiteralPath $domainDocumentationPath -Filter '*.md')) {
-    $scopeLine = Get-Content -LiteralPath $domainDocument.FullName | Where-Object { $_ -like '- 持久化范围：*' } | Select-Object -First 1
-    if ([string]::IsNullOrWhiteSpace($scopeLine)) { throw "领域文档缺少持久化范围：$($domainDocument.Name)" }
-    $scopePatterns = @([regex]::Matches($scopeLine, '`(?<table>[a-z0-9_*]+)`') | ForEach-Object { $_.Groups['table'].Value })
+$domainSectionMatches = [regex]::Matches(
+    $businessModelBoundaryContent,
+    '(?ms)^### (?<domain>[A-Z]+)：[^\r\n]+\r?\n(?<body>.*?)(?=^### [A-Z]+：|\z)'
+)
+if ($domainSectionMatches.Count -ne 21) {
+    throw "领域持久化边界应包含 21 个领域章节，实际为 $($domainSectionMatches.Count)。"
+}
+foreach ($domainSection in $domainSectionMatches) {
+    $domainCode = $domainSection.Groups['domain'].Value
+    $scopeLineMatch = [regex]::Match($domainSection.Groups['body'].Value, '(?m)^- 持久化范围：.*$')
+    if (-not $scopeLineMatch.Success) { throw "领域章节缺少持久化范围：$domainCode" }
+    $scopePatterns = @([regex]::Matches($scopeLineMatch.Value, '`(?<table>[a-z0-9_*]+)`') | ForEach-Object { $_.Groups['table'].Value })
     foreach ($table in $tables) {
         $tableName = $table.Name
         if (@($scopePatterns | Where-Object { $tableName -like $_ }).Count -gt 0) {
-            $tableDomainUsage[$tableName].Add($domainDocument.BaseName)
+            $tableDomainUsage[$tableName].Add($domainCode)
         }
     }
 }
@@ -341,7 +348,7 @@ foreach ($kindGroup in ($requirementIds | Group-Object { ($_ -split '-')[0] } | 
     [void]$traceability.AppendLine("- $($kindGroup.Name)：$($kindGroup.Count)")
 }
 [void]$traceability.AppendLine()
-[void]$traceability.AppendLine('持久化边界列表示该编号可能使用的数据库事实，不表示每项能力都必须新建表。状态机、跨对象校验、权限、风险、审批、协议和流程属于非数据库职责，具体契约见 `docs/implementation`。')
+[void]$traceability.AppendLine('持久化边界列表示该编号可能使用的数据库事实，不表示每项能力都必须新建表。状态机、跨对象校验、权限、风险、审批、协议和流程属于非数据库职责，具体契约见 `docs/代码实施`。')
 [void]$traceability.AppendLine()
 [void]$traceability.AppendLine('| 编号 | 首次来源文档 | 领域 | 数据库持久化边界 | 非数据库职责提示 | 数据库验证与后续验收提示 |')
 [void]$traceability.AppendLine('|---|---|---|---|---|---|')
@@ -353,7 +360,7 @@ foreach ($id in $requirementIds) {
         elseif ($kind -eq 'SLO') { '`configuration_versions` 的 `SLO_BASELINE`，运行指标进入监控系统' }
         elseif ($kind -in @('TTL','TERM')) { '`configuration_versions` 的 `DURATION_BASELINE`，对象表保存实际到期时间' }
         else { $domainStorage[$domain] }
-    $nonDatabaseResponsibility = "$domain 领域的状态转换、跨对象有效性、权限、风险、审批、协议和流程属于非数据库职责；具体契约见 docs/implementation。"
+    $nonDatabaseResponsibility = "$domain 领域的状态转换、跨对象有效性、权限、风险、审批、协议和流程属于非数据库职责；具体契约见 docs/代码实施。"
     $domainAtEvidence = if ($atIdsByDomain.ContainsKey($domain)) {
         (($atIdsByDomain[$domain] | Sort-Object | ForEach-Object { "``$_``" }) -join '、')
     } else { 'SQL Verification 001–008 与领域负向测试' }
@@ -366,7 +373,7 @@ foreach ($id in $requirementIds) {
 $relationDocument = [System.Text.StringBuilder]::new()
 [void]$relationDocument.AppendLine('# 逻辑关系与非数据库校验清单')
 [void]$relationDocument.AppendLine()
-[void]$relationDocument.AppendLine('> 本文件由 Migration 的 Column Comment 生成，只登记数据库可识别的逻辑引用。在不创建 Foreign Key 的前提下，目标存在性、作用域、生命周期、删除行为和多态解析属于非数据库职责，具体契约见 `docs/implementation`。')
+[void]$relationDocument.AppendLine('> 本文件由 Migration 的 Column Comment 生成，只登记数据库可识别的逻辑引用。在不创建 Foreign Key 的前提下，目标存在性、作用域、生命周期、删除行为和多态解析属于非数据库职责，具体契约见 `docs/代码实施`。')
 [void]$relationDocument.AppendLine()
 [void]$relationDocument.AppendLine("- 逻辑引用字段：$($logicalRelations.Count)")
 [void]$relationDocument.AppendLine("- 可执行 SQL 孤儿检查：$($directRelations.Count)")
