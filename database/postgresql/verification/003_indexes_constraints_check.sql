@@ -27,12 +27,17 @@ BEGIN
     SELECT string_agg(format('%s.%s', required.table_name, required.constraint_name), ', ' ORDER BY required.table_name, required.constraint_name)
       INTO missing_constraints
       FROM (VALUES
-        ('global_users','uq_global_users_public'),('user_subjects','uq_user_subject_client_subject'),('identifier_claims','uq_identifier_claim'),
+        ('global_users','uq_global_users_public'),('user_subjects','uq_user_subject_client_subject'),
+        ('user_subjects','uq_user_subject_current'),('user_subjects','ck_user_subject_rotation_shape'),
+        ('identifier_claims','uq_identifier_claim'),
         ('oauth_clients','uq_oauth_clients_client_id'),('api_resources','uq_api_resources_audience'),('oauth_scopes','uq_oauth_scopes_code'),
         ('idempotency_records','uq_idempotency_caller_key'),('outbox_events','uq_outbox_event_id'),('inbox_messages','uq_inbox_consumer_event'),
         ('operations','uq_operations_caller_key'),('approval_cases','uq_approval_cases_execution_id'),
+        ('memberships','uq_memberships_current'),('memberships','ck_memberships_current_slot'),
         ('configuration_versions','uq_configuration_version'),('policy_versions','uq_policy_versions'),('event_schema_versions','uq_event_schema_version'),
-        ('legacy_id_mappings','uq_legacy_external_mapping'),('refresh_token_instances','uq_refresh_token_hash'),('authorization_codes','uq_authorization_codes_hash'),
+        ('legacy_id_mappings','uq_legacy_external_mapping'),('auth_challenges','uq_auth_challenge_token'),
+        ('refresh_token_instances','uq_refresh_token_hash'),('refresh_token_instances','uq_refresh_token_sequence'),
+        ('authorization_codes','uq_authorization_codes_hash'),
         ('machine_credentials','uq_machine_credential_replacement'),('authorization_grants','ck_authorization_grants_granted_at')
       ) AS required(table_name, constraint_name)
      WHERE NOT EXISTS (
@@ -48,9 +53,26 @@ BEGIN
     SELECT string_agg(required.index_name, ', ' ORDER BY required.index_name)
       INTO missing_indexes
       FROM (VALUES
-        ('ix_global_users_guest_expiry'),('ix_user_profiles_primary_contact'),('ix_operations_capability'),
-        ('ix_sessions_consent'),('ix_access_tokens_actor'),('ix_access_tokens_delegation'),
-        ('ix_access_tokens_consent'),('ix_access_tokens_decision'),('ix_authorization_decisions_validity'),
+        ('ix_identifier_lookup'),('ix_global_users_guest_expiry'),('ix_identifier_bindings_identifier'),
+        ('ix_auth_challenges_expiry'),('ix_authenticators_user'),('ix_user_profiles_primary_contact'),
+        ('ix_sessions_user_state'),('ix_sessions_consent'),('ix_sessions_policy_versions_gin'),
+        ('ix_access_token_jti'),('ix_access_tokens_actor'),('ix_access_tokens_delegation'),
+        ('ix_access_tokens_consent'),('ix_access_tokens_decision'),('ix_access_tokens_policy_versions_gin'),
+        ('ix_operations_queue'),('ix_operations_capability'),('ix_operations_policy_versions_gin'),
+        ('ix_outbox_publish_queue'),('ix_inbox_state'),
+        ('ix_authorization_decisions_validity'),('ix_authorization_decisions_decision_id'),
+        ('ix_authorization_decisions_policy_versions_gin'),('ix_risk_signals_signal_id'),
+        ('ix_risk_signals_subject'),
+        ('ix_webhook_deliveries_queue'),('ix_webhook_attempts_delivery'),
+        ('ix_webhook_deliveries_delivery_id'),('ix_webhook_deliveries_event_subscription'),
+        ('ix_message_requests_queue'),('ix_message_attempts_request'),('ix_message_requests_request_id'),
+        ('ix_risk_assessment_signals_signal'),('ix_memberships_user'),
+        ('ix_user_role_assignments_effective'),('ix_relationship_tuples_resource'),
+        ('ix_user_role_assignments_role'),('ix_group_role_assignments_role'),('ix_machine_role_assignments_role'),
+        ('ix_directory_sync_batches_queue'),('ix_migration_items_queue'),
+        ('ix_configuration_release_items_version'),('ix_identifiers_key'),('ix_credential_materials_key'),
+        ('ix_data_export_artifacts_key'),('ix_jwks_release_keys_key'),('ix_certificates_key'),
+        ('ix_machine_credentials_key'),('ix_machine_credentials_certificate'),('ix_webhook_signing_keys_key'),
         ('ix_outbox_recorded_brin'),('ix_inbox_received_brin')
       ) AS required(index_name)
      WHERE NOT EXISTS (

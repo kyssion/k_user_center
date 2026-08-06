@@ -55,6 +55,38 @@ foreach ($file in $domainFiles) {
     }
 }
 
+# 已执行 Migration 不可改写；后续 ALTER TABLE 新增字段也必须进入数据字典。
+foreach ($alterMatch in [regex]::Matches($allSql, '(?ms)^ALTER TABLE iam\.(?<table>[a-z0-9_]+)\s+(?<body>.*?);')) {
+    $tableName = $alterMatch.Groups['table'].Value
+    $tableObject = $tables | Where-Object { $_.Name -eq $tableName } | Select-Object -First 1
+    if ($null -eq $tableObject) { continue }
+
+    foreach ($columnMatch in [regex]::Matches($alterMatch.Groups['body'].Value, '(?im)^\s*ADD COLUMN (?<column>[a-z][a-z0-9_]*)\s+(?<definition>[^\r\n]+?)(?:,)?\s*$')) {
+        $columnName = $columnMatch.Groups['column'].Value
+        if (@($tableObject.Columns | Where-Object { $_.Name -eq $columnName }).Count -gt 0) { continue }
+        $definition = $columnMatch.Groups['definition'].Value.TrimEnd(',').Trim()
+        $tableObject.Columns.Add([pscustomobject]@{
+            Name = $columnName
+            Definition = $definition
+            Comment = ''
+        })
+    }
+}
+
+# Comment 允许由后续 Migration 补充或澄清，生成结果使用文件顺序中的最后声明。
+foreach ($table in $tables) {
+    $tableCommentMatches = [regex]::Matches($allSql, "COMMENT ON TABLE iam\.$($table.Name) IS '(?<comment>[^']*)';")
+    if ($tableCommentMatches.Count -gt 0) {
+        $table.Comment = $tableCommentMatches[$tableCommentMatches.Count - 1].Groups['comment'].Value
+    }
+    foreach ($column in $table.Columns) {
+        $columnCommentMatches = [regex]::Matches($allSql, "COMMENT ON COLUMN iam\.$($table.Name)\.$($column.Name) IS '(?<comment>[^']*)';")
+        if ($columnCommentMatches.Count -gt 0) {
+            $column.Comment = $columnCommentMatches[$columnCommentMatches.Count - 1].Groups['comment'].Value
+        }
+    }
+}
+
 $missingTableComments = @($tables | Where-Object { [string]::IsNullOrWhiteSpace($_.Comment) })
 $missingColumnComments = @($tables | ForEach-Object {
     $tableName = $_.Name
@@ -198,7 +230,12 @@ foreach ($table in $tables) {
 }
 
 $indexMatches = [regex]::Matches($allSql, '(?im)^CREATE\s+(?<unique>UNIQUE\s+)?INDEX\s+(?<index>[a-z0-9_]+)\s+ON\s+iam\.(?<table>[a-z0-9_]+)\s+(?<definition>[^;]+);')
-$constraintMatches = [regex]::Matches($allSql, '(?im)^\s*CONSTRAINT\s+(?<constraint>[a-z0-9_]+)\s+(?<definition>PRIMARY KEY|UNIQUE(?: NULLS NOT DISTINCT)?|CHECK)')
+$droppedConstraintNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+foreach ($dropMatch in [regex]::Matches($allSql, '(?im)^\s*DROP CONSTRAINT\s+(?<constraint>[a-z0-9_]+)')) {
+    [void]$droppedConstraintNames.Add($dropMatch.Groups['constraint'].Value)
+}
+$constraintMatches = @([regex]::Matches($allSql, '(?im)^\s*(?:ADD\s+)?CONSTRAINT\s+(?<constraint>[a-z0-9_]+)\s+(?<definition>PRIMARY KEY|UNIQUE(?: NULLS NOT DISTINCT)?|CHECK)') |
+    Where-Object { -not $droppedConstraintNames.Contains($_.Groups['constraint'].Value) })
 $inventory = [System.Text.StringBuilder]::new()
 [void]$inventory.AppendLine('# 表、字段、索引与约束清单')
 [void]$inventory.AppendLine()
@@ -304,7 +341,7 @@ foreach ($kindGroup in ($requirementIds | Group-Object { ($_ -split '-')[0] } | 
     [void]$traceability.AppendLine("- $($kindGroup.Name)：$($kindGroup.Count)")
 }
 [void]$traceability.AppendLine()
-[void]$traceability.AppendLine('持久化边界列表示该编号可能使用的数据库事实，不表示每项能力都必须新建表。状态机、跨对象校验、权限、风险、审批、协议和流程属于非数据库职责，进入编码阶段后在单独的代码实施文档中展开。')
+[void]$traceability.AppendLine('持久化边界列表示该编号可能使用的数据库事实，不表示每项能力都必须新建表。状态机、跨对象校验、权限、风险、审批、协议和流程属于非数据库职责，具体契约见 `docs/implementation`。')
 [void]$traceability.AppendLine()
 [void]$traceability.AppendLine('| 编号 | 首次来源文档 | 领域 | 数据库持久化边界 | 非数据库职责提示 | 数据库验证与后续验收提示 |')
 [void]$traceability.AppendLine('|---|---|---|---|---|---|')
@@ -316,7 +353,7 @@ foreach ($id in $requirementIds) {
         elseif ($kind -eq 'SLO') { '`configuration_versions` 的 `SLO_BASELINE`，运行指标进入监控系统' }
         elseif ($kind -in @('TTL','TERM')) { '`configuration_versions` 的 `DURATION_BASELINE`，对象表保存实际到期时间' }
         else { $domainStorage[$domain] }
-    $nonDatabaseResponsibility = "$domain 领域的状态转换、跨对象有效性、权限、风险、审批、协议和流程属于非数据库职责；具体实现另行成册。"
+    $nonDatabaseResponsibility = "$domain 领域的状态转换、跨对象有效性、权限、风险、审批、协议和流程属于非数据库职责；具体契约见 docs/implementation。"
     $domainAtEvidence = if ($atIdsByDomain.ContainsKey($domain)) {
         (($atIdsByDomain[$domain] | Sort-Object | ForEach-Object { "``$_``" }) -join '、')
     } else { 'SQL Verification 001–008 与领域负向测试' }
@@ -329,7 +366,7 @@ foreach ($id in $requirementIds) {
 $relationDocument = [System.Text.StringBuilder]::new()
 [void]$relationDocument.AppendLine('# 逻辑关系与非数据库校验清单')
 [void]$relationDocument.AppendLine()
-[void]$relationDocument.AppendLine('> 本文件由 Migration 的 Column Comment 生成，只登记数据库可识别的逻辑引用。在不创建 Foreign Key 的前提下，目标存在性、作用域、生命周期、删除行为和多态解析属于非数据库职责，具体实现以后续代码实施文档为准。')
+[void]$relationDocument.AppendLine('> 本文件由 Migration 的 Column Comment 生成，只登记数据库可识别的逻辑引用。在不创建 Foreign Key 的前提下，目标存在性、作用域、生命周期、删除行为和多态解析属于非数据库职责，具体契约见 `docs/implementation`。')
 [void]$relationDocument.AppendLine()
 [void]$relationDocument.AppendLine("- 逻辑引用字段：$($logicalRelations.Count)")
 [void]$relationDocument.AppendLine("- 可执行 SQL 孤儿检查：$($directRelations.Count)")

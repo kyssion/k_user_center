@@ -10,6 +10,7 @@ DECLARE
     privilege_name text;
     split_privilege_table text;
     append_table text;
+    table_item record;
     partition_item record;
 BEGIN
     SELECT string_agg(required.role_name, ', ' ORDER BY required.role_name)
@@ -63,6 +64,25 @@ BEGIN
             IF pg_has_role(runtime_role, 'iam_owner', 'MEMBER') OR pg_has_role(runtime_role, 'iam_migrator', 'MEMBER') THEN
                 errors := array_append(errors, format('%s 越权继承对象所有者或迁移角色', runtime_role));
             END IF;
+        END LOOP;
+
+        -- DELETE 不属于任何运行时身份；业务删除和匿名化由代码转换状态，物理清理由受审批的迁移或维护流程执行。
+        FOR table_item IN
+            SELECT namespace.nspname AS schema_name, relation.relname AS table_name
+              FROM pg_class relation
+              JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+             WHERE namespace.nspname = 'iam'
+               AND relation.relkind IN ('r','p')
+               AND NOT relation.relispartition
+        LOOP
+            FOREACH runtime_role IN ARRAY ARRAY[
+                'iam_app_rw','iam_app_ro','iam_sensitive_rw','iam_audit_writer','iam_audit_reader','iam_ops'
+            ]
+            LOOP
+                IF has_table_privilege(runtime_role, format('%I.%I', table_item.schema_name, table_item.table_name), 'DELETE') THEN
+                    errors := array_append(errors, format('%s 具有运行时 DELETE：%s.%s', runtime_role, table_item.schema_name, table_item.table_name));
+                END IF;
+            END LOOP;
         END LOOP;
 
         -- 审计父表只允许专用 Writer 追加和 Reader 读取。
@@ -164,6 +184,15 @@ BEGIN
               JOIN pg_namespace child_ns ON child_ns.oid = child.relnamespace
              WHERE parent_ns.nspname = 'iam'
         LOOP
+            FOREACH runtime_role IN ARRAY ARRAY[
+                'iam_app_rw','iam_app_ro','iam_sensitive_rw','iam_audit_writer','iam_audit_reader','iam_ops'
+            ]
+            LOOP
+                IF has_table_privilege(runtime_role, format('%I.%I', partition_item.schema_name, partition_item.table_name), 'DELETE') THEN
+                    errors := array_append(errors, format('%s 具有分区运行时 DELETE：%s.%s', runtime_role, partition_item.schema_name, partition_item.table_name));
+                END IF;
+            END LOOP;
+
             IF partition_item.parent_name = 'audit_events' THEN
                 FOREACH runtime_role IN ARRAY ARRAY['iam_app_rw','iam_app_ro','iam_sensitive_rw','iam_ops']
                 LOOP
@@ -209,4 +238,4 @@ BEGIN
 END
 $permissions_check$;
 
-SELECT 'PASS: 技术角色属性、成员关系、敏感数据、运维范围和追加证据权限完整' AS result;
+SELECT 'PASS: 技术角色属性、成员关系、无运行时 DELETE、敏感数据、运维范围和追加证据权限完整' AS result;

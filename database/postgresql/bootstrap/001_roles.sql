@@ -26,11 +26,11 @@ ALTER ROLE iam_ops NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOB
 
 COMMENT ON ROLE iam_owner IS 'IAM 数据库对象所有者；应用运行时禁止使用。';
 COMMENT ON ROLE iam_migrator IS 'IAM 版本化迁移执行角色；登录身份由部署平台授予该角色。';
-COMMENT ON ROLE iam_app_rw IS 'IAM 普通业务表运行时读写角色。';
+COMMENT ON ROLE iam_app_rw IS 'IAM 普通业务表运行时读写角色；不含物理 DELETE，业务授权由代码判断。';
 COMMENT ON ROLE iam_app_ro IS 'IAM 受控只读查询角色。';
-COMMENT ON ROLE iam_sensitive_rw IS 'IAM 凭证材料和机器凭证等敏感表受控读写角色。';
+COMMENT ON ROLE iam_sensitive_rw IS 'IAM 凭证材料和机器凭证等敏感表受控读写角色；不含物理 DELETE。';
 COMMENT ON ROLE iam_audit_writer IS 'IAM 审计事件仅追加写入角色。';
 COMMENT ON ROLE iam_audit_reader IS 'IAM 审计事件受控读取角色。';
-COMMENT ON ROLE iam_ops IS 'IAM 队列、投递、分区、迁移和运行维护角色。';
+COMMENT ON ROLE iam_ops IS 'IAM 队列、投递、同步和运行维护角色；不含业务授权、DDL 或物理 DELETE。';
 
 GRANT iam_owner TO iam_migrator;
