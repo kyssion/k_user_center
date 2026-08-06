@@ -37,7 +37,7 @@ COMMENT ON COLUMN iam.machine_principals.state IS '机器主体状态。';
 COMMENT ON COLUMN iam.machine_principals.security_epoch IS '机器主体安全水位。';
 COMMENT ON COLUMN iam.machine_principals.expires_at IS '可空；主体计划到期时间。';
 COMMENT ON COLUMN iam.machine_principals.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.machine_principals.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.machine_principals.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.machine_principals.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.machine_credentials (
@@ -79,7 +79,7 @@ COMMENT ON COLUMN iam.machine_credentials.valid_from IS '凭证生效时间。';
 COMMENT ON COLUMN iam.machine_credentials.valid_until IS '凭证失效时间。';
 COMMENT ON COLUMN iam.machine_credentials.last_used_at IS '可空；最近成功使用时间。';
 COMMENT ON COLUMN iam.machine_credentials.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.machine_credentials.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.machine_credentials.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.machine_credentials.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.workload_trust_bundle_versions (
@@ -94,9 +94,8 @@ CREATE TABLE iam.workload_trust_bundle_versions (
     valid_until timestamptz NOT NULL,
     published_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT uq_workload_trust_bundle UNIQUE (trust_domain, version),
-    CONSTRAINT ck_workload_trust_versions CHECK (version > 0 AND schema_version > 0 AND row_version >= 0),
+    CONSTRAINT ck_workload_trust_versions CHECK (version > 0 AND schema_version > 0),
     CONSTRAINT ck_workload_trust_validity CHECK (valid_until > valid_from)
 );
 COMMENT ON TABLE iam.workload_trust_bundle_versions IS '工作负载信任域的不可变 Trust Bundle 版本；发布、重叠和验证由 MACHINE 代码执行。';
@@ -111,7 +110,6 @@ COMMENT ON COLUMN iam.workload_trust_bundle_versions.valid_from IS '验证生效
 COMMENT ON COLUMN iam.workload_trust_bundle_versions.valid_until IS '验证失效时间。';
 COMMENT ON COLUMN iam.workload_trust_bundle_versions.published_at IS '可空；发布时间。';
 COMMENT ON COLUMN iam.workload_trust_bundle_versions.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.workload_trust_bundle_versions.row_version IS '发布生命周期元数据的乐观锁版本；信任包载荷字段不可更新。';
 
 CREATE TABLE iam.workload_attestations (
     id uuid NOT NULL,
@@ -159,7 +157,7 @@ CREATE TABLE iam.delegations (
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     row_version bigint NOT NULL DEFAULT 0,
-    CONSTRAINT ck_delegation_depth CHECK (max_depth >= 1 AND current_depth >= 1 AND current_depth <= max_depth),
+    CONSTRAINT ck_delegation_depth CHECK (max_depth >= 1 AND current_depth >= 1),
     CONSTRAINT ck_delegation_validity CHECK (valid_until > valid_from),
     CONSTRAINT ck_delegation_version CHECK (row_version >= 0)
 );
@@ -176,7 +174,7 @@ COMMENT ON COLUMN iam.delegations.valid_from IS '委托生效时间。';
 COMMENT ON COLUMN iam.delegations.valid_until IS '委托失效时间。';
 COMMENT ON COLUMN iam.delegations.reason_code IS '委托原因码。';
 COMMENT ON COLUMN iam.delegations.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.delegations.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.delegations.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.delegations.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.approval_cases (
@@ -210,7 +208,7 @@ COMMENT ON COLUMN iam.approval_cases.initiator_id IS '发起者逻辑 ID。';
 COMMENT ON COLUMN iam.approval_cases.tenant_id IS '可空；逻辑引用 iam.tenants.id。';
 COMMENT ON COLUMN iam.approval_cases.request_digest IS '规范化请求 SHA-256 摘要。';
 COMMENT ON COLUMN iam.approval_cases.request_snapshot IS '待审批请求快照；代码脱敏和版本化。';
-COMMENT ON COLUMN iam.approval_cases.policy_version_id IS '可空；逻辑引用 iam.policy_versions.id；数据库校验版本存在，审批要求和适用性由 CTRL 代码解释。';
+COMMENT ON COLUMN iam.approval_cases.policy_version_id IS '可空；逻辑引用审批策略版本。';
 COMMENT ON COLUMN iam.approval_cases.resource_version IS '可空；发起时目标资源版本，用于执行前防 TOCTOU。';
 COMMENT ON COLUMN iam.approval_cases.required_approvals IS '策略快照要求的最少批准数。';
 COMMENT ON COLUMN iam.approval_cases.state IS '审批单状态。';
@@ -218,7 +216,7 @@ COMMENT ON COLUMN iam.approval_cases.expires_at IS '审批请求过期时间。'
 COMMENT ON COLUMN iam.approval_cases.execution_id IS '可空；批准动作执行时生成的全局唯一执行 UUID，用于并发防重和执行绑定。';
 COMMENT ON COLUMN iam.approval_cases.executed_at IS '可空；批准动作实际执行时间。';
 COMMENT ON COLUMN iam.approval_cases.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.approval_cases.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.approval_cases.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.approval_cases.row_version IS '乐观锁版本。';
 COMMENT ON CONSTRAINT uq_approval_cases_execution_id ON iam.approval_cases IS '数据库保证一个执行标识最多绑定一个审批单；执行资格和状态由代码校验。';
 
@@ -251,6 +249,5 @@ CREATE INDEX ix_workload_attestations_principal ON iam.workload_attestations (ma
 CREATE INDEX ix_delegations_actor ON iam.delegations (actor_user_id, state, valid_until);
 CREATE INDEX ix_delegations_subject ON iam.delegations (subject_user_id, state, valid_until);
 CREATE INDEX ix_approval_cases_queue ON iam.approval_cases (state, expires_at, created_at);
-CREATE INDEX ix_approval_cases_policy ON iam.approval_cases (policy_version_id, created_at DESC) WHERE policy_version_id IS NOT NULL;
 CREATE INDEX ix_approval_actions_case ON iam.approval_actions (approval_case_id, created_at);
 COMMENT ON INDEX iam.ix_approval_cases_queue IS '审批处理器按状态和过期时间查询待办。';

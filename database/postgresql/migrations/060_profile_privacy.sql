@@ -29,7 +29,7 @@ COMMENT ON COLUMN iam.user_profiles.timezone IS '可空；IANA 时区名称。';
 COMMENT ON COLUMN iam.user_profiles.primary_contact_identifier_id IS '可空；逻辑引用 iam.identifiers.id；代码校验其属于当前用户、已验证且当前有效绑定。';
 COMMENT ON COLUMN iam.user_profiles.profile_version IS '资料语义版本，用于事件和缓存。';
 COMMENT ON COLUMN iam.user_profiles.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.user_profiles.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.user_profiles.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.user_profiles.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.profile_documents (
@@ -59,7 +59,7 @@ COMMENT ON COLUMN iam.profile_documents.document_version IS '文档语义版本�
 COMMENT ON COLUMN iam.profile_documents.payload IS '扩展资料载荷；代码校验 Schema、敏感级别和大小。';
 COMMENT ON COLUMN iam.profile_documents.payload_digest IS '规范化载荷 SHA-256 摘要。';
 COMMENT ON COLUMN iam.profile_documents.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.profile_documents.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.profile_documents.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.profile_documents.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.identity_assurance_assertions (
@@ -108,9 +108,8 @@ CREATE TABLE iam.agreement_versions (
     effective_at timestamptz,
     retired_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT uq_agreement_version UNIQUE (agreement_type, region_code, version),
-    CONSTRAINT ck_agreement_version CHECK (version > 0 AND row_version >= 0)
+    CONSTRAINT ck_agreement_version CHECK (version > 0)
 );
 COMMENT ON TABLE iam.agreement_versions IS '服务协议和隐私政策的不可变版本元数据；适用性和重新接受判断由 PRIV 代码处理。';
 COMMENT ON COLUMN iam.agreement_versions.id IS '应用生成的协议版本 UUIDv7。';
@@ -124,7 +123,6 @@ COMMENT ON COLUMN iam.agreement_versions.published_at IS '可空；发布时间�
 COMMENT ON COLUMN iam.agreement_versions.effective_at IS '可空；生效时间。';
 COMMENT ON COLUMN iam.agreement_versions.retired_at IS '可空；停止用于新接受的时间。';
 COMMENT ON COLUMN iam.agreement_versions.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.agreement_versions.row_version IS '发布生命周期元数据的乐观锁版本；协议内容字段不可更新。';
 
 CREATE TABLE iam.agreement_acceptances (
     id uuid PRIMARY KEY,
@@ -176,7 +174,7 @@ COMMENT ON COLUMN iam.consent_aggregates.recipient_id IS '接收方逻辑 ID。'
 COMMENT ON COLUMN iam.consent_aggregates.consent_epoch IS 'Consent 安全水位；撤回或范围收缩时由代码递增。';
 COMMENT ON COLUMN iam.consent_aggregates.current_consent_id IS '可空；逻辑引用当前 iam.consents.id。';
 COMMENT ON COLUMN iam.consent_aggregates.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.consent_aggregates.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.consent_aggregates.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.consent_aggregates.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.consents (
@@ -228,9 +226,7 @@ CREATE TABLE iam.privacy_requests (
     row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT uq_privacy_request_operation UNIQUE (operation_id),
     CONSTRAINT ck_privacy_request_deadline CHECK (deadline_at > submitted_at),
-    CONSTRAINT ck_privacy_request_version CHECK (row_version >= 0),
-    CONSTRAINT ck_privacy_request_agent_pair CHECK ((agent_type IS NULL) = (agent_id IS NULL)),
-    CONSTRAINT ck_privacy_request_completion CHECK (completed_at IS NULL OR completed_at >= submitted_at)
+    CONSTRAINT ck_privacy_request_version CHECK (row_version >= 0)
 );
 COMMENT ON TABLE iam.privacy_requests IS '访问、更正、导出、删除等数据主体权利请求；身份核验、期限、编排和例外由 PRIV 代码处理。';
 COMMENT ON COLUMN iam.privacy_requests.id IS '应用生成的隐私请求 UUIDv7。';
@@ -247,7 +243,7 @@ COMMENT ON COLUMN iam.privacy_requests.rejection_reason IS '可空；稳定拒�
 COMMENT ON COLUMN iam.privacy_requests.submitted_at IS '请求提交业务时间。';
 COMMENT ON COLUMN iam.privacy_requests.completed_at IS '可空；处理完成时间。';
 COMMENT ON COLUMN iam.privacy_requests.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.privacy_requests.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.privacy_requests.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.privacy_requests.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.legal_holds (
@@ -266,8 +262,7 @@ CREATE TABLE iam.legal_holds (
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT ck_legal_hold_expiry CHECK (expires_at IS NULL OR expires_at > effective_at),
-    CONSTRAINT ck_legal_hold_version CHECK (row_version >= 0),
-    CONSTRAINT ck_legal_hold_release CHECK (released_at IS NULL OR released_at >= effective_at)
+    CONSTRAINT ck_legal_hold_version CHECK (row_version >= 0)
 );
 COMMENT ON TABLE iam.legal_holds IS '法律保留事实；适用范围、授权和解除由 PRIV/CTRL 代码决定。';
 COMMENT ON COLUMN iam.legal_holds.id IS '应用生成的 Legal Hold UUIDv7。';
@@ -282,7 +277,7 @@ COMMENT ON COLUMN iam.legal_holds.effective_at IS '保留生效时间。';
 COMMENT ON COLUMN iam.legal_holds.expires_at IS '可空；计划失效时间。';
 COMMENT ON COLUMN iam.legal_holds.released_at IS '可空；实际解除时间。';
 COMMENT ON COLUMN iam.legal_holds.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.legal_holds.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.legal_holds.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.legal_holds.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.data_export_artifacts (
@@ -304,7 +299,7 @@ COMMENT ON TABLE iam.data_export_artifacts IS '隐私数据导出文件元数据
 COMMENT ON COLUMN iam.data_export_artifacts.id IS '应用生成的导出物 UUIDv7。';
 COMMENT ON COLUMN iam.data_export_artifacts.privacy_request_id IS '逻辑引用 iam.privacy_requests.id。';
 COMMENT ON COLUMN iam.data_export_artifacts.object_storage_ref IS '受控对象存储引用，不是公开 URL。';
-COMMENT ON COLUMN iam.data_export_artifacts.key_id IS '逻辑引用 iam.cryptographic_keys.id；KMS/HSM 外部引用先登记为密钥元数据，数据库 FK 校验存在性。';
+COMMENT ON COLUMN iam.data_export_artifacts.key_id IS '逻辑引用 iam.cryptographic_keys.id 或 KMS Key 元数据。';
 COMMENT ON COLUMN iam.data_export_artifacts.content_digest IS '导出文件 SHA-256 摘要。';
 COMMENT ON COLUMN iam.data_export_artifacts.format IS '导出格式代码。';
 COMMENT ON COLUMN iam.data_export_artifacts.size_bytes IS '文件非负字节数。';
@@ -340,6 +335,7 @@ COMMENT ON COLUMN iam.deletion_proofs.created_at IS '数据库插入时间。';
 CREATE INDEX ix_profile_documents_user ON iam.profile_documents (user_id, namespace);
 CREATE INDEX ix_user_profiles_primary_contact ON iam.user_profiles (primary_contact_identifier_id) WHERE primary_contact_identifier_id IS NOT NULL;
 CREATE INDEX ix_assurance_user ON iam.identity_assurance_assertions (user_id, state, expires_at);
+CREATE INDEX ix_consents_aggregate ON iam.consents (aggregate_id, version DESC);
 CREATE INDEX ix_privacy_requests_user ON iam.privacy_requests (user_id, state, submitted_at DESC);
 CREATE INDEX ix_privacy_requests_deadline ON iam.privacy_requests (state, deadline_at);
 CREATE INDEX ix_legal_holds_target ON iam.legal_holds (target_type, target_id, state);

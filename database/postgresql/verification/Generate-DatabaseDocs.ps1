@@ -13,7 +13,6 @@ $businessModelBoundaryPath = Join-Path $RepositoryRoot 'docs/database/业务模�
 $domainDocumentationPath = Join-Path $RepositoryRoot 'docs/database/domains'
 $capabilityMapPath = Join-Path $RepositoryRoot 'docs/能力地图.md'
 $blueprintPath = Join-Path $RepositoryRoot 'docs/统一身份与访问平台建设与验收蓝图.md'
-$queryContractPath = Join-Path $RepositoryRoot 'docs/database/查询与索引契约.md'
 $domainFiles = Get-ChildItem -LiteralPath $migrationPath -Filter '*.sql' |
     Where-Object { $_.Name -match '^(010|020|030|040|050|060|070|080|090|100|110|120|130|140)_' } |
     Sort-Object Name
@@ -61,22 +60,9 @@ $missingColumnComments = @($tables | ForEach-Object {
     $tableName = $_.Name
     $_.Columns | Where-Object { [string]::IsNullOrWhiteSpace($_.Comment) } | ForEach-Object { "$tableName.$($_.Name)" }
 })
-$foreignKeyDefinitionMatches = [regex]::Matches($allSql, '(?im)^ALTER TABLE iam\.(?<source_table>[a-z0-9_]+) ADD CONSTRAINT (?<constraint>[a-z0-9_]+) FOREIGN KEY \((?<source_column>[a-z0-9_]+)\) REFERENCES iam\.(?<target_table>[a-z0-9_]+) \((?<target_column>[a-z0-9_]+)\) ON DELETE RESTRICT;')
-$foreignKeyMatches = $foreignKeyDefinitionMatches.Count
+$foreignKeyMatches = [regex]::Matches($allSql, '(?im)^\s*(?:CONSTRAINT\s+[a-z0-9_]+\s+)?FOREIGN\s+KEY\b|^\s*[a-z][a-z0-9_]*\s+[^\r\n,]*\bREFERENCES\s+iam\.').Count
 $triggerMatches = [regex]::Matches($allSql, '(?i)\bCREATE\s+TRIGGER\b').Count
 $routineMatches = [regex]::Matches($allSql, '(?i)\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\b').Count
-$updatedAtVersionTriggerMatches = [regex]::Matches($allSql, '(?i)CREATE\s+TRIGGER\s+trg_set_updated_at_row_version\b').Count
-$rowVersionTriggerMatches = [regex]::Matches($allSql, '(?i)CREATE\s+TRIGGER\s+trg_set_row_version\b').Count
-$technicalTriggerMatches = $updatedAtVersionTriggerMatches + $rowVersionTriggerMatches
-$updatedAtVersionRoutineMatches = [regex]::Matches(
-    $allSql,
-    '(?is)CREATE\s+OR\s+REPLACE\s+FUNCTION\s+iam\.set_updated_at_row_version_technical\s*\(\s*\).*?AS\s+\$set_updated_at_row_version_technical\$\s*BEGIN\s+NEW\.updated_at\s*:=\s*statement_timestamp\(\)\s*;\s*NEW\.row_version\s*:=\s*OLD\.row_version\s*\+\s*1\s*;\s*RETURN\s+NEW\s*;\s*END\s*\$set_updated_at_row_version_technical\$\s*;'
-).Count
-$rowVersionRoutineMatches = [regex]::Matches(
-    $allSql,
-    '(?is)CREATE\s+OR\s+REPLACE\s+FUNCTION\s+iam\.set_row_version_technical\s*\(\s*\).*?AS\s+\$set_row_version_technical\$\s*BEGIN\s+NEW\.row_version\s*:=\s*OLD\.row_version\s*\+\s*1\s*;\s*RETURN\s+NEW\s*;\s*END\s*\$set_row_version_technical\$\s*;'
-).Count
-$technicalRoutineMatches = $updatedAtVersionRoutineMatches + $rowVersionRoutineMatches
 $enumMatches = [regex]::Matches($allSql, '(?i)\bCREATE\s+TYPE\b[^;]*\bAS\s+ENUM\b').Count
 $viewMatches = [regex]::Matches($allSql, '(?im)^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:MATERIALIZED\s+)?VIEW\b').Count
 $forbiddenSeedTargets = [regex]::Matches($allSeedSql, '(?im)\bINSERT\s+INTO\s+iam\.(?:global_users|identifiers|identifier_bindings|tenants|organizations|memberships|oauth_clients|machine_credentials|credential_materials)\b').Count
@@ -122,81 +108,7 @@ foreach ($table in $tables) {
     }
 }
 
-$singleColumnUniqueTargets = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-foreach ($table in $tables) {
-    foreach ($column in $table.Columns) {
-        if ($column.Definition -match '\b(?:PRIMARY KEY|UNIQUE)\b') {
-            [void]$singleColumnUniqueTargets.Add("$($table.Name).$($column.Name)")
-        }
-    }
-}
-foreach ($tableMatch in [regex]::Matches($allSql, '(?ms)^CREATE TABLE iam\.(?<table>[a-z0-9_]+)\s*\((?<body>.*?)^\)(?: PARTITION BY [^;]+)?;')) {
-    foreach ($uniqueMatch in [regex]::Matches($tableMatch.Groups['body'].Value, '(?im)^\s*CONSTRAINT\s+[a-z0-9_]+\s+(?:PRIMARY KEY|UNIQUE(?: NULLS NOT DISTINCT)?)\s*\(\s*(?<column>[a-z0-9_]+)\s*\)')) {
-        [void]$singleColumnUniqueTargets.Add("$($tableMatch.Groups['table'].Value).$($uniqueMatch.Groups['column'].Value)")
-    }
-}
-foreach ($indexMatch in [regex]::Matches($allSql, '(?im)^CREATE\s+UNIQUE\s+INDEX\s+[a-z0-9_]+\s+ON\s+iam\.(?<table>[a-z0-9_]+)\s*\(\s*(?<column>[a-z0-9_]+)\s*\)\s*;')) {
-    [void]$singleColumnUniqueTargets.Add("$($indexMatch.Groups['table'].Value).$($indexMatch.Groups['column'].Value)")
-}
-
-$foreignKeyValidationErrors = [System.Collections.Generic.List[string]]::new()
-foreach ($foreignKeyMatch in $foreignKeyDefinitionMatches) {
-    $sourceKey = "$($foreignKeyMatch.Groups['source_table'].Value).$($foreignKeyMatch.Groups['source_column'].Value)"
-    $targetKey = "$($foreignKeyMatch.Groups['target_table'].Value).$($foreignKeyMatch.Groups['target_column'].Value)"
-    if (-not $columnSet.Contains($sourceKey) -or -not $columnSet.Contains($targetKey)) {
-        $foreignKeyValidationErrors.Add("$sourceKey -> $targetKey 字段不存在")
-        continue
-    }
-    $sourceType = [regex]::Match($columnDefinitionLookup[$sourceKey], '^(?<type>[a-z]+(?:\([0-9, ]+\))?(?:\[\])?)').Groups['type'].Value
-    $targetType = [regex]::Match($columnDefinitionLookup[$targetKey], '^(?<type>[a-z]+(?:\([0-9, ]+\))?(?:\[\])?)').Groups['type'].Value
-    if ($sourceType -ne $targetType) {
-        $foreignKeyValidationErrors.Add("$sourceKey($sourceType) -> $targetKey($targetType) 类型不一致")
-    }
-    if (-not $singleColumnUniqueTargets.Contains($targetKey)) {
-        $foreignKeyValidationErrors.Add("$sourceKey -> $targetKey 目标键非单列唯一")
-    }
-}
-
-$constraintNames = @([regex]::Matches($allSql, '(?im)\bCONSTRAINT\s+(?<name>[a-z0-9_]+)\s+(?:PRIMARY KEY|UNIQUE|CHECK|FOREIGN KEY)') | ForEach-Object { $_.Groups['name'].Value })
-$duplicateConstraintNames = @($constraintNames | Group-Object | Where-Object { $_.Count -gt 1 })
-$longConstraintNames = @($constraintNames | Where-Object { $_.Length -gt 63 })
-$columnUpdateGrantErrors = [System.Collections.Generic.List[string]]::new()
-$columnUpdateGrantMatches = [regex]::Matches($allSql, '(?ims)^GRANT\s+UPDATE\s*\((?<columns>.*?)\)\s+ON\s+iam\.(?<table>[a-z0-9_]+)\s+TO\s+(?<role>[a-z0-9_]+)\s*;')
-$canonicalColumnUpdateGrants = [System.Collections.Generic.List[string]]::new()
-foreach ($grantMatch in $columnUpdateGrantMatches) {
-    $grantColumns = @($grantMatch.Groups['columns'].Value -split ',' | ForEach-Object { $_.Trim() } | Sort-Object)
-    foreach ($columnName in $grantColumns) {
-        $key = "$($grantMatch.Groups['table'].Value).$columnName"
-        if (-not $columnSet.Contains($key)) {
-            $columnUpdateGrantErrors.Add("$($grantMatch.Groups['role'].Value):$key")
-        }
-        if ($columnName -in @('updated_at', 'row_version')) {
-            $columnUpdateGrantErrors.Add("$($grantMatch.Groups['role'].Value):$key 由数据库技术 Trigger 独占")
-        }
-    }
-    $canonicalColumnUpdateGrants.Add("$($grantMatch.Groups['role'].Value):$($grantMatch.Groups['table'].Value):$($grantColumns -join ',')")
-}
-$canonicalColumnUpdateGrantText = (@($canonicalColumnUpdateGrants | Sort-Object) -join "`n")
-$columnUpdateGrantFingerprint = [Convert]::ToHexString(
-    [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($canonicalColumnUpdateGrantText))
-).ToLowerInvariant()
-$expectedColumnUpdateGrantFingerprint = 'ffed532dc141e2a751bf866c587897cc403b21fed55081d217d43faad7a3409d'
-$broadUpdateGrantMatches = [regex]::Matches($allSql, '(?im)^\s*GRANT\s+(?:(?:SELECT|INSERT|DELETE|TRUNCATE|REFERENCES|TRIGGER)\s*,\s*)*UPDATE(?:\s*,|\s+ON)').Count
-
-$indexObjectNames = @([regex]::Matches($allSql, '(?im)^CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?<name>[a-z0-9_]+)\s+ON\s+iam\.') | ForEach-Object { $_.Groups['name'].Value })
-$queryContractContent = Get-Content -Raw -LiteralPath $queryContractPath
-$queryContractObjectNames = @([regex]::Matches($queryContractContent, '`(?<name>(?:ix|uq|pk)_[a-z0-9_]+)`') | ForEach-Object { $_.Groups['name'].Value } | Sort-Object -Unique)
-$availableDatabaseObjectNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-foreach ($objectName in @($constraintNames + $indexObjectNames)) { [void]$availableDatabaseObjectNames.Add($objectName) }
-$missingQueryContractObjects = @($queryContractObjectNames | Where-Object { -not $availableDatabaseObjectNames.Contains($_) })
-
 $logicalRelations = [System.Collections.Generic.List[object]]::new()
-$foreignKeyRelationSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-foreach ($foreignKeyMatch in $foreignKeyDefinitionMatches) {
-    [void]$foreignKeyRelationSet.Add(
-        "$($foreignKeyMatch.Groups['source_table'].Value).$($foreignKeyMatch.Groups['source_column'].Value)->$($foreignKeyMatch.Groups['target_table'].Value).$($foreignKeyMatch.Groups['target_column'].Value)"
-    )
-}
 $logicalCommentMatches = [regex]::Matches($allSql, "(?im)^COMMENT ON COLUMN iam\.(?<source_table>[a-z0-9_]+)\.(?<source_column>[a-z0-9_]+) IS '(?<comment>[^']*逻辑引用[^']*)';")
 foreach ($logicalMatch in $logicalCommentMatches) {
     $sourceTable = $logicalMatch.Groups['source_table'].Value
@@ -210,15 +122,7 @@ foreach ($logicalMatch in $logicalCommentMatches) {
         $targetTable = $targetMatches[0].Groups['target_table'].Value
         $targetColumn = $targetMatches[0].Groups['target_column'].Value
         $sourceDefinition = $columnDefinitionLookup["$sourceTable.$sourceColumn"]
-        $relationKind = if ($sourceDefinition -match '\[\]') {
-            'ARRAY'
-        } elseif ($foreignKeyRelationSet.Contains("$sourceTable.$sourceColumn->$targetTable.$targetColumn")) {
-            'FOREIGN_KEY'
-        } elseif ($comment -match '或外部|或\s*KMS|或事件总线') {
-            'EXTERNAL_ALTERNATIVE'
-        } else {
-            'DIRECT'
-        }
+        $relationKind = if ($sourceDefinition -match '\[\]') { 'ARRAY' } else { 'DIRECT' }
         if (-not $columnSet.Contains("$targetTable.$targetColumn")) {
             throw "逻辑引用目标不存在：$sourceTable.$sourceColumn -> $targetTable.$targetColumn"
         }
@@ -234,12 +138,8 @@ foreach ($logicalMatch in $logicalCommentMatches) {
 }
 
 $logicalRelations = @($logicalRelations | Sort-Object SourceTable, SourceColumn -Unique)
-$foreignKeyRelations = @($logicalRelations | Where-Object { $_.Kind -eq 'FOREIGN_KEY' })
 $directRelations = @($logicalRelations | Where-Object { $_.Kind -in @('DIRECT','ARRAY') })
-$arrayRelations = @($logicalRelations | Where-Object { $_.Kind -eq 'ARRAY' })
-$unprotectedDirectRelations = @($logicalRelations | Where-Object { $_.Kind -eq 'DIRECT' })
 $polymorphicRelations = @($logicalRelations | Where-Object { $_.Kind -eq 'POLYMORPHIC' })
-$externalAlternativeRelations = @($logicalRelations | Where-Object { $_.Kind -eq 'EXTERNAL_ALTERNATIVE' })
 
 $requirementPattern = '\b(?:CAP|REQ|INV|API|EVT|AT|SLO|TTL|TERM)-[A-Z0-9]+(?:-[A-Z0-9]+)+\b'
 $requirementIndex = @{}
@@ -258,32 +158,15 @@ foreach ($sourcePath in @($capabilityMapPath, $blueprintPath)) {
 }
 $requirementIds = @($requirementIndex.Keys | Sort-Object)
 
-if ($tables.Count -ne 117) { throw "目标表数量应为 117，实际为 $($tables.Count)。" }
+if ($tables.Count -ne 113) { throw "目标表数量应为 113，实际为 $($tables.Count)。" }
 if ($missingTableComments.Count -gt 0) { throw "缺少表 Comment：$($missingTableComments.Name -join ', ')" }
 if ($missingColumnComments.Count -gt 0) { throw "缺少字段 Comment：$($missingColumnComments -join ', ')" }
 if ($missingBusinessModelMappings.Count -gt 0) { throw "业务模型与持久化边界清单缺少逻辑表映射：$($missingBusinessModelMappings.Name -join ', ')" }
 if ($missingDomainMappings.Count -gt 0) { throw "领域文档持久化范围缺少逻辑表映射：$($missingDomainMappings.Name -join ', ')" }
 if ($missingSharedAuthorityMappings.Count -gt 0) { throw "多领域复用表缺少共享写入权威：$($missingSharedAuthorityMappings.Name -join ', ')" }
-if ($foreignKeyMatches -ne 201 -or $foreignKeyRelations.Count -ne 201) {
-    throw "直接引用 FK 数量错误：Source=$foreignKeyMatches CommentMapping=$($foreignKeyRelations.Count) Expected=201"
+if ($foreignKeyMatches -gt 0 -or $triggerMatches -gt 0 -or $routineMatches -gt 0 -or $enumMatches -gt 0 -or $viewMatches -gt 0) {
+    throw "发现禁止对象：FK=$foreignKeyMatches Trigger=$triggerMatches Routine=$routineMatches Enum=$enumMatches View=$viewMatches"
 }
-if ($logicalRelations.Count -ne 223 -or $arrayRelations.Count -ne 0 -or $unprotectedDirectRelations.Count -ne 0 -or
-    $polymorphicRelations.Count -ne 21 -or $externalAlternativeRelations.Count -ne 1) {
-    throw "逻辑引用分类漂移：Total=$($logicalRelations.Count) FK=$($foreignKeyRelations.Count) Array=$($arrayRelations.Count) Direct=$($unprotectedDirectRelations.Count) Polymorphic=$($polymorphicRelations.Count) External=$($externalAlternativeRelations.Count)"
-}
-if ($foreignKeyValidationErrors.Count -gt 0) { throw "Foreign Key 静态校验失败：$($foreignKeyValidationErrors -join '; ')" }
-if ($duplicateConstraintNames.Count -gt 0 -or $longConstraintNames.Count -gt 0) {
-    throw "约束名称校验失败：Duplicate=$($duplicateConstraintNames.Name -join ', ') Long=$($longConstraintNames -join ', ')"
-}
-if ($columnUpdateGrantErrors.Count -gt 0 -or $broadUpdateGrantMatches -gt 0 -or $columnUpdateGrantFingerprint -ne $expectedColumnUpdateGrantFingerprint) {
-    throw "UPDATE 权限静态校验失败：InvalidColumns=$($columnUpdateGrantErrors -join ', ') BroadUpdate=$broadUpdateGrantMatches Fingerprint=$columnUpdateGrantFingerprint"
-}
-if ($triggerMatches -ne 2 -or $updatedAtVersionTriggerMatches -ne 1 -or $rowVersionTriggerMatches -ne 1 -or
-    $routineMatches -ne 2 -or $updatedAtVersionRoutineMatches -ne 1 -or $rowVersionRoutineMatches -ne 1 -or
-    $enumMatches -gt 0 -or $viewMatches -gt 0) {
-    throw "发现非白名单数据库对象：Trigger=$triggerMatches TechnicalTrigger=$technicalTriggerMatches Routine=$routineMatches TechnicalRoutine=$technicalRoutineMatches Enum=$enumMatches View=$viewMatches"
-}
-if ($missingQueryContractObjects.Count -gt 0) { throw "查询与索引契约引用不存在对象：$($missingQueryContractObjects -join ', ')" }
 if ($forbiddenSeedTargets -gt 0 -or $rawSecretSeedKeys -gt 0) {
     throw "Seed 安全检查失败：ForbiddenTargets=$forbiddenSeedTargets RawSecretKeys=$rawSecretSeedKeys"
 }
@@ -324,9 +207,7 @@ $inventory = [System.Text.StringBuilder]::new()
 [void]$inventory.AppendLine("- 父表：$($tables.Count)")
 [void]$inventory.AppendLine("- 字段：$((($tables | ForEach-Object { $_.Columns.Count }) | Measure-Object -Sum).Sum)")
 [void]$inventory.AppendLine("- 显式索引：$($indexMatches.Count)")
-[void]$inventory.AppendLine("- 表内命名约束：$($constraintMatches.Count)")
-[void]$inventory.AppendLine("- RESTRICT Foreign Key：$foreignKeyMatches")
-[void]$inventory.AppendLine("- 命名约束合计：$($constraintMatches.Count + $foreignKeyMatches)")
+[void]$inventory.AppendLine("- 命名约束：$($constraintMatches.Count)")
 [void]$inventory.AppendLine("- 分区父表：$(@($tables | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Partition) }).Count)")
 [void]$inventory.AppendLine()
 [void]$inventory.AppendLine('## 按 Migration 统计')
@@ -423,7 +304,7 @@ foreach ($kindGroup in ($requirementIds | Group-Object { ($_ -split '-')[0] } | 
     [void]$traceability.AppendLine("- $($kindGroup.Name)：$($kindGroup.Count)")
 }
 [void]$traceability.AppendLine()
-[void]$traceability.AppendLine('持久化边界列表示该编号可能使用的数据库事实，不表示每项能力都必须新建表。状态机、跨对象校验、业务授权求值、风险、审批、协议和流程属于非数据库职责，进入编码阶段后在单独的代码实施文档中展开。')
+[void]$traceability.AppendLine('持久化边界列表示该编号可能使用的数据库事实，不表示每项能力都必须新建表。状态机、跨对象校验、权限、风险、审批、协议和流程属于非数据库职责，进入编码阶段后在单独的代码实施文档中展开。')
 [void]$traceability.AppendLine()
 [void]$traceability.AppendLine('| 编号 | 首次来源文档 | 领域 | 数据库持久化边界 | 非数据库职责提示 | 数据库验证与后续验收提示 |')
 [void]$traceability.AppendLine('|---|---|---|---|---|---|')
@@ -435,10 +316,10 @@ foreach ($id in $requirementIds) {
         elseif ($kind -eq 'SLO') { '`configuration_versions` 的 `SLO_BASELINE`，运行指标进入监控系统' }
         elseif ($kind -in @('TTL','TERM')) { '`configuration_versions` 的 `DURATION_BASELINE`，对象表保存实际到期时间' }
         else { $domainStorage[$domain] }
-    $nonDatabaseResponsibility = "$domain 领域的状态转换、跨对象有效性、业务授权求值、风险、审批、协议和流程属于非数据库职责；具体实现另行成册。"
+    $nonDatabaseResponsibility = "$domain 领域的状态转换、跨对象有效性、权限、风险、审批、协议和流程属于非数据库职责；具体实现另行成册。"
     $domainAtEvidence = if ($atIdsByDomain.ContainsKey($domain)) {
         (($atIdsByDomain[$domain] | Sort-Object | ForEach-Object { "``$_``" }) -join '、')
-    } else { 'SQL Verification 001–009 与领域负向测试' }
+    } else { 'SQL Verification 001–008 与领域负向测试' }
     $evidence = if ($kind -eq 'AT') { "``$id`` 可能包含数据库契约、权限、并发或审计验证；具体自动化实现以后续实施矩阵为准" }
         elseif ($kind -eq 'SLO') { "``$id`` 主要由指标、压测或演练验证；数据库只保存基线和必要证据；相关领域验收提示（非逐条绑定）：$domainAtEvidence" }
         else { "SQL Verification 验证持久化边界；相关领域验收提示（非逐条绑定）：$domainAtEvidence" }
@@ -448,25 +329,18 @@ foreach ($id in $requirementIds) {
 $relationDocument = [System.Text.StringBuilder]::new()
 [void]$relationDocument.AppendLine('# 逻辑关系与非数据库校验清单')
 [void]$relationDocument.AppendLine()
-[void]$relationDocument.AppendLine('> 本文件由 Migration 的 Column Comment 与 FK 定义生成。明确、同库且目标键唯一的直接引用由 `RESTRICT` Foreign Key 保护存在性；多态、外部引用以及租户、状态、授权和生命周期有效性仍由代码校验。内部多值引用使用关系表，不使用无法建立 FK 的 UUID 数组。')
+[void]$relationDocument.AppendLine('> 本文件由 Migration 的 Column Comment 生成，只登记数据库可识别的逻辑引用。在不创建 Foreign Key 的前提下，目标存在性、作用域、生命周期、删除行为和多态解析属于非数据库职责，具体实现以后续代码实施文档为准。')
 [void]$relationDocument.AppendLine()
 [void]$relationDocument.AppendLine("- 逻辑引用字段：$($logicalRelations.Count)")
-[void]$relationDocument.AppendLine("- Foreign Key 保护的直接引用：$($foreignKeyRelations.Count)")
-[void]$relationDocument.AppendLine("- 保留 SQL 孤儿检查的数组/直接引用：$($directRelations.Count)")
-[void]$relationDocument.AppendLine("- 未受 FK 保护的确定内部直接引用：$($unprotectedDirectRelations.Count)")
-[void]$relationDocument.AppendLine("- 多态引用：$($polymorphicRelations.Count)")
-[void]$relationDocument.AppendLine("- 外部替代引用：$($externalAlternativeRelations.Count)")
+[void]$relationDocument.AppendLine("- 可执行 SQL 孤儿检查：$($directRelations.Count)")
+[void]$relationDocument.AppendLine("- 多态或代码解析引用：$($polymorphicRelations.Count)")
 [void]$relationDocument.AppendLine()
 [void]$relationDocument.AppendLine('| 来源字段 | 类型 | 目标 | 非数据库校验提示 | Comment |')
 [void]$relationDocument.AppendLine('|---|---|---|---|---|')
 foreach ($relation in $logicalRelations) {
-    $target = if ($relation.Kind -eq 'POLYMORPHIC') { '由类型字段或代码注册表解析' }
-        elseif ($relation.Kind -eq 'EXTERNAL_ALTERNATIVE') { "``iam.$($relation.TargetTable).$($relation.TargetColumn)`` 或外部标识注册表" }
-        else { "``iam.$($relation.TargetTable).$($relation.TargetColumn)``" }
+    $target = if ($relation.Kind -eq 'POLYMORPHIC') { '由类型字段或代码注册表解析' } else { "``iam.$($relation.TargetTable).$($relation.TargetColumn)``" }
     $validation = if ($relation.Kind -eq 'POLYMORPHIC') { '校验类型白名单、目标存在、租户/业务线作用域和生命周期；负向测试未知类型与跨租户引用。' }
-        elseif ($relation.Kind -eq 'EXTERNAL_ALTERNATIVE') { '代码根据来源类型解析本库对象或外部标识，并校验外部注册、作用域、生命周期和反向引用；SQL 不得把合法外部标识误判为孤儿。' }
         elseif ($relation.Kind -eq 'ARRAY') { '逐项校验目标存在、作用域和生命周期；写入与删除前运行集合校验。' }
-        elseif ($relation.Kind -eq 'FOREIGN_KEY') { '数据库校验目标存在并禁止级联删除；代码继续校验租户/业务线作用域、目标状态、授权和生命周期。' }
         else { '写入前校验目标存在、租户/业务线作用域和生命周期；删除或匿名化执行反向引用检查。' }
     [void]$relationDocument.AppendLine("| ``iam.$($relation.SourceTable).$($relation.SourceColumn)`` | ``$($relation.Kind)`` | $target | $validation | $($relation.Comment.Replace('|','\|')) |")
 }
@@ -475,35 +349,31 @@ $orphanCheck = [System.Text.StringBuilder]::new()
 [void]$orphanCheck.AppendLine('\set ON_ERROR_STOP on')
 [void]$orphanCheck.AppendLine()
 [void]$orphanCheck.AppendLine('-- 本文件由 Generate-DatabaseDocs.ps1 从 Column Comment 中的精确逻辑引用生成，请勿手工维护。')
-if ($directRelations.Count -eq 0) {
-    [void]$orphanCheck.AppendLine("SELECT 'PASS: 不存在需要 SQL 事后扫描的确定内部直接引用；全部由 Foreign Key 实时保护' AS result;")
-} else {
-    [void]$orphanCheck.AppendLine('CREATE TEMP TABLE iam_orphan_scan AS')
-    [void]$orphanCheck.AppendLine('WITH orphan_scan(relation_name, orphan_count) AS (')
-    for ($i = 0; $i -lt $directRelations.Count; $i++) {
-        $relation = $directRelations[$i]
-        $prefix = if ($i -eq 0) { '    ' } else { '    UNION ALL ' }
-        $relationName = "$($relation.SourceTable).$($relation.SourceColumn) -> $($relation.TargetTable).$($relation.TargetColumn)"
-        if ($relation.Kind -eq 'ARRAY') {
-            [void]$orphanCheck.AppendLine("${prefix}SELECT '$relationName', count(*) FROM iam.$($relation.SourceTable) s CROSS JOIN LATERAL unnest(s.$($relation.SourceColumn)) AS v(value) LEFT JOIN iam.$($relation.TargetTable) t ON t.$($relation.TargetColumn) = v.value WHERE t.$($relation.TargetColumn) IS NULL")
-        } else {
-            [void]$orphanCheck.AppendLine("${prefix}SELECT '$relationName', count(*) FROM iam.$($relation.SourceTable) s LEFT JOIN iam.$($relation.TargetTable) t ON t.$($relation.TargetColumn) = s.$($relation.SourceColumn) WHERE s.$($relation.SourceColumn) IS NOT NULL AND t.$($relation.TargetColumn) IS NULL")
-        }
+[void]$orphanCheck.AppendLine('CREATE TEMP TABLE iam_orphan_scan AS')
+[void]$orphanCheck.AppendLine('WITH orphan_scan(relation_name, orphan_count) AS (')
+for ($i = 0; $i -lt $directRelations.Count; $i++) {
+    $relation = $directRelations[$i]
+    $prefix = if ($i -eq 0) { '    ' } else { '    UNION ALL ' }
+    $relationName = "$($relation.SourceTable).$($relation.SourceColumn) -> $($relation.TargetTable).$($relation.TargetColumn)"
+    if ($relation.Kind -eq 'ARRAY') {
+        [void]$orphanCheck.AppendLine("${prefix}SELECT '$relationName', count(*) FROM iam.$($relation.SourceTable) s CROSS JOIN LATERAL unnest(s.$($relation.SourceColumn)) AS v(value) LEFT JOIN iam.$($relation.TargetTable) t ON t.$($relation.TargetColumn) = v.value WHERE t.$($relation.TargetColumn) IS NULL")
+    } else {
+        [void]$orphanCheck.AppendLine("${prefix}SELECT '$relationName', count(*) FROM iam.$($relation.SourceTable) s LEFT JOIN iam.$($relation.TargetTable) t ON t.$($relation.TargetColumn) = s.$($relation.SourceColumn) WHERE s.$($relation.SourceColumn) IS NOT NULL AND t.$($relation.TargetColumn) IS NULL")
     }
-    [void]$orphanCheck.AppendLine(')')
-    [void]$orphanCheck.AppendLine('SELECT relation_name, orphan_count FROM orphan_scan WHERE orphan_count > 0 ORDER BY relation_name;')
-    [void]$orphanCheck.AppendLine()
-    [void]$orphanCheck.AppendLine('DO $orphan_gate$')
-    [void]$orphanCheck.AppendLine('DECLARE details text;')
-    [void]$orphanCheck.AppendLine('BEGIN')
-    [void]$orphanCheck.AppendLine("    SELECT string_agg(format('%s=%s', relation_name, orphan_count), '; ' ORDER BY relation_name) INTO details FROM iam_orphan_scan;")
-    [void]$orphanCheck.AppendLine("    IF details IS NOT NULL THEN RAISE EXCEPTION '逻辑关系孤儿门禁失败：%', details; END IF;")
-    [void]$orphanCheck.AppendLine('END')
-    [void]$orphanCheck.AppendLine('$orphan_gate$;')
-    [void]$orphanCheck.AppendLine()
-    [void]$orphanCheck.AppendLine("SELECT 'PASS: 全部可解析逻辑引用无孤儿记录' AS result;")
-    [void]$orphanCheck.AppendLine('DROP TABLE iam_orphan_scan;')
 }
+[void]$orphanCheck.AppendLine(')')
+[void]$orphanCheck.AppendLine('SELECT relation_name, orphan_count FROM orphan_scan WHERE orphan_count > 0 ORDER BY relation_name;')
+[void]$orphanCheck.AppendLine()
+[void]$orphanCheck.AppendLine('DO $orphan_gate$')
+[void]$orphanCheck.AppendLine('DECLARE details text;')
+[void]$orphanCheck.AppendLine('BEGIN')
+[void]$orphanCheck.AppendLine("    SELECT string_agg(format('%s=%s', relation_name, orphan_count), '; ' ORDER BY relation_name) INTO details FROM iam_orphan_scan;")
+[void]$orphanCheck.AppendLine("    IF details IS NOT NULL THEN RAISE EXCEPTION '逻辑关系孤儿门禁失败：%', details; END IF;")
+[void]$orphanCheck.AppendLine('END')
+[void]$orphanCheck.AppendLine('$orphan_gate$;')
+[void]$orphanCheck.AppendLine()
+[void]$orphanCheck.AppendLine("SELECT 'PASS: 全部可解析逻辑引用无孤儿记录' AS result;")
+[void]$orphanCheck.AppendLine('DROP TABLE iam_orphan_scan;')
 
 $report = [System.Text.StringBuilder]::new()
 [void]$report.AppendLine('# 数据库对象静态检查报告')
@@ -512,42 +382,33 @@ $report = [System.Text.StringBuilder]::new()
 [void]$report.AppendLine()
 [void]$report.AppendLine('| 检查项 | 结果 |')
 [void]$report.AppendLine('|---|---|')
-[void]$report.AppendLine("| 目标父表 | PASS：$($tables.Count)/117 |")
+[void]$report.AppendLine("| 目标父表 | PASS：$($tables.Count)/113 |")
 [void]$report.AppendLine("| 表 Comment | PASS：缺失 $($missingTableComments.Count) |")
 [void]$report.AppendLine("| 字段 Comment | PASS：缺失 $($missingColumnComments.Count) |")
-[void]$report.AppendLine("| RESTRICT Foreign Key 源码 | PASS：$foreignKeyMatches |")
-[void]$report.AppendLine("| Foreign Key 字段、类型与目标唯一性 | PASS：$($foreignKeyValidationErrors.Count) 异常 |")
-[void]$report.AppendLine("| 约束名称唯一且不超过 63 字节 | PASS：重复 $($duplicateConstraintNames.Count)，超长 $($longConstraintNames.Count) |")
-[void]$report.AppendLine("| 列级 UPDATE 授权字段 | PASS：$($columnUpdateGrantMatches.Count) 组，异常 $($columnUpdateGrantErrors.Count)，指纹 ``$columnUpdateGrantFingerprint`` |")
-[void]$report.AppendLine("| 运行时整表 UPDATE 授权 | PASS：$broadUpdateGrantMatches |")
-[void]$report.AppendLine("| 白名单技术元数据 Trigger 工厂 | PASS：$technicalTriggerMatches |")
-[void]$report.AppendLine("| 白名单技术元数据函数及精确函数体 | PASS：$technicalRoutineMatches |")
-[void]$report.AppendLine("| 查询与索引契约对象 | PASS：$($queryContractObjectNames.Count)，缺失 $($missingQueryContractObjects.Count) |")
+[void]$report.AppendLine("| Foreign Key 源码 | PASS：$foreignKeyMatches |")
+[void]$report.AppendLine("| 业务 Trigger 源码 | PASS：$triggerMatches |")
+[void]$report.AppendLine("| 持久化 Routine 源码 | PASS：$routineMatches |")
 [void]$report.AppendLine("| PostgreSQL Enum 源码 | PASS：$enumMatches |")
 [void]$report.AppendLine("| View / Materialized View 源码 | PASS：$viewMatches |")
 [void]$report.AppendLine("| Seed 禁止业务数据目标 | PASS：$forbiddenSeedTargets |")
 [void]$report.AppendLine("| Seed 敏感原文 JSON Key | PASS：$rawSecretSeedKeys |")
 [void]$report.AppendLine("| 数据库需求覆盖编号 | PASS：$($requirementIds.Count)（仅编号与持久化边界索引，不代表代码实施或逐条测试覆盖） |")
-[void]$report.AppendLine("| 业务模型逻辑表映射 | PASS：$($tables.Count)/117 |")
-[void]$report.AppendLine("| 领域持久化范围映射 | PASS：$($tables.Count)/117 |")
+[void]$report.AppendLine("| 业务模型逻辑表映射 | PASS：$($tables.Count)/113 |")
+[void]$report.AppendLine("| 领域持久化范围映射 | PASS：$($tables.Count)/113 |")
 [void]$report.AppendLine("| 多领域复用表权威映射 | PASS：$($sharedTables.Count)/$($sharedTables.Count) |")
 [void]$report.AppendLine("| 逻辑引用字段 | PASS：$($logicalRelations.Count) |")
-[void]$report.AppendLine("| Foreign Key 保护的直接引用 | PASS：$($foreignKeyRelations.Count) |")
-[void]$report.AppendLine("| 保留可执行孤儿检查 | PASS：$($directRelations.Count) |")
-[void]$report.AppendLine("| 未受 FK 保护的确定内部直接引用 | PASS：$($unprotectedDirectRelations.Count) |")
+[void]$report.AppendLine("| 可执行孤儿检查 | PASS：$($directRelations.Count) |")
 [void]$report.AppendLine("| 多态代码校验关系 | PASS：$($polymorphicRelations.Count) |")
-[void]$report.AppendLine("| 外部替代引用 | PASS：$($externalAlternativeRelations.Count) |")
 [void]$report.AppendLine("| 分区父表定义 | PASS：$(@($tables | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Partition) }).Count)/13 |")
-[void]$report.AppendLine('| PostgreSQL 实际执行 | 未执行：按当前任务范围暂缓 PostgreSQL 15/16 空库 Migration、Seed 与 Verification 实跑 |')
+[void]$report.AppendLine('| PostgreSQL 实际执行 | 未验证：当前工作区未发现 `psql` 或容器运行时 |')
 
 New-Item -ItemType Directory -Force -Path $outputPath | Out-Null
 $utf8 = [System.Text.UTF8Encoding]::new($false)
-$finalNewLine = [Environment]::NewLine
-[System.IO.File]::WriteAllText((Join-Path $outputPath '数据字典.md'), $dictionary.ToString().TrimEnd() + $finalNewLine, $utf8)
-[System.IO.File]::WriteAllText((Join-Path $outputPath '表字段索引清单.md'), $inventory.ToString().TrimEnd() + $finalNewLine, $utf8)
-[System.IO.File]::WriteAllText((Join-Path $outputPath '数据库对象检查报告.md'), $report.ToString().TrimEnd() + $finalNewLine, $utf8)
-[System.IO.File]::WriteAllText($traceabilityPath, $traceability.ToString().TrimEnd() + $finalNewLine, $utf8)
-[System.IO.File]::WriteAllText($logicalRelationPath, $relationDocument.ToString().TrimEnd() + $finalNewLine, $utf8)
-[System.IO.File]::WriteAllText((Join-Path $verificationPath '006_logical_relation_orphan_check.sql'), $orphanCheck.ToString().TrimEnd() + $finalNewLine, $utf8)
+[System.IO.File]::WriteAllText((Join-Path $outputPath '数据字典.md'), $dictionary.ToString(), $utf8)
+[System.IO.File]::WriteAllText((Join-Path $outputPath '表字段索引清单.md'), $inventory.ToString(), $utf8)
+[System.IO.File]::WriteAllText((Join-Path $outputPath '数据库对象检查报告.md'), $report.ToString(), $utf8)
+[System.IO.File]::WriteAllText($traceabilityPath, $traceability.ToString(), $utf8)
+[System.IO.File]::WriteAllText($logicalRelationPath, $relationDocument.ToString(), $utf8)
+[System.IO.File]::WriteAllText((Join-Path $verificationPath '006_logical_relation_orphan_check.sql'), $orphanCheck.ToString(), $utf8)
 
-Write-Output "Generated: $($tables.Count) tables; $($indexMatches.Count) indexes; $($constraintMatches.Count + $foreignKeyMatches) constraints ($foreignKeyMatches FK); $($requirementIds.Count) database coverage IDs; $($directRelations.Count) executable relations."
+Write-Output "Generated: $($tables.Count) tables; $($indexMatches.Count) indexes; $($constraintMatches.Count) constraints; $($requirementIds.Count) database coverage IDs; $($directRelations.Count) executable relations."

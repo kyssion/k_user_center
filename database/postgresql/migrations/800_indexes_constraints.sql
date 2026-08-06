@@ -2,30 +2,26 @@
 
 SET ROLE iam_owner;
 
--- 跨领域直接引用、业务查询路径和高容量时间查询的补充索引。
+-- 跨领域逻辑引用和高容量时间查询的补充索引；不创建 Foreign Key。
+CREATE INDEX ix_user_subjects_user ON iam.user_subjects (user_id, client_id);
 CREATE INDEX ix_identifier_claims_owner ON iam.identifier_claims (owner_user_id, claim_state);
-CREATE INDEX ix_identifier_bindings_identifier ON iam.identifier_bindings (identifier_id, bound_at DESC);
-CREATE INDEX ix_identifiers_key ON iam.identifiers (key_id) WHERE key_id IS NOT NULL;
-CREATE INDEX ix_credential_materials_key ON iam.credential_materials (key_id) WHERE key_id IS NOT NULL;
+CREATE INDEX ix_credential_materials_authenticator ON iam.credential_materials (authenticator_id, material_type, material_version DESC);
 CREATE INDEX ix_recovery_codes_batch ON iam.recovery_codes (batch_id, state);
 CREATE INDEX ix_login_steps_transaction ON iam.login_transaction_steps (login_transaction_id, state);
 CREATE INDEX ix_tenant_domains_tenant ON iam.tenant_domains (tenant_id, state);
 CREATE INDEX ix_group_members_group ON iam.group_members (group_id, removed_at);
 CREATE INDEX ix_session_participants_session ON iam.session_participants (session_id, logout_state);
+CREATE INDEX ix_refresh_tokens_family ON iam.refresh_token_instances (family_id, sequence_no DESC);
 CREATE INDEX ix_agreement_acceptances_user ON iam.agreement_acceptances (user_id, accepted_at DESC);
 CREATE INDEX ix_consent_aggregates_subject ON iam.consent_aggregates (subject_type, subject_id, purpose_code);
 CREATE INDEX ix_legal_holds_active ON iam.legal_holds (state, expires_at, effective_at);
 CREATE INDEX ix_data_export_privacy_request ON iam.data_export_artifacts (privacy_request_id, state);
-CREATE INDEX ix_data_export_artifacts_key ON iam.data_export_artifacts (key_id);
+CREATE INDEX ix_deletion_proofs_privacy_request ON iam.deletion_proofs (privacy_request_id, system_code);
+CREATE INDEX ix_risk_assessment_signals_assessment ON iam.risk_assessment_signals (assessment_id, signal_id);
 CREATE INDEX ix_approval_actions_reviewer ON iam.approval_actions (reviewer_type, reviewer_id, created_at DESC);
 CREATE INDEX ix_jwks_release_keys_release ON iam.jwks_release_keys (jwks_release_id, display_order);
-CREATE INDEX ix_jwks_release_keys_key ON iam.jwks_release_keys (key_id);
-CREATE INDEX ix_certificates_key ON iam.certificates (key_id) WHERE key_id IS NOT NULL;
-CREATE INDEX ix_machine_credentials_key ON iam.machine_credentials (key_id) WHERE key_id IS NOT NULL;
-CREATE INDEX ix_machine_credentials_certificate ON iam.machine_credentials (certificate_id) WHERE certificate_id IS NOT NULL;
+CREATE INDEX ix_configuration_release_items_release ON iam.configuration_release_items (release_id, apply_order);
 CREATE INDEX ix_webhook_signing_keys_subscription ON iam.webhook_signing_keys (subscription_id, state, valid_until);
-CREATE INDEX ix_webhook_signing_keys_key ON iam.webhook_signing_keys (key_id);
-CREATE INDEX ix_webhook_deliveries_event_subscription ON iam.webhook_deliveries (event_source_code, event_id, subscription_id, created_at DESC);
 CREATE INDEX ix_consumer_checkpoints_watermark ON iam.consumer_checkpoints (consumer_id, security_watermark);
 CREATE INDEX ix_contact_reachability_state ON iam.contact_reachability (channel, reachability_state, updated_at);
 CREATE INDEX ix_migration_items_platform ON iam.migration_items (platform_object_type, platform_object_id, state);
@@ -37,29 +33,25 @@ CREATE INDEX ix_access_tokens_consent ON iam.access_token_records (consent_id, c
 CREATE INDEX ix_access_tokens_decision ON iam.access_token_records (authorization_decision_id, issued_at DESC) WHERE authorization_decision_id IS NOT NULL;
 CREATE INDEX ix_authorization_decisions_validity ON iam.authorization_decisions (valid_until, decided_at DESC);
 
+COMMENT ON INDEX iam.ix_user_subjects_user IS '从用户和 Client 定位 Subject 映射。';
 COMMENT ON INDEX iam.ix_identifier_claims_owner IS '从用户定位当前标识占用。';
-COMMENT ON INDEX iam.ix_identifier_bindings_identifier IS '按 Identifier 读取历史绑定与解绑墓碑，支撑换绑和隔离判断。';
-COMMENT ON INDEX iam.ix_identifiers_key IS '密钥轮换或失陷处置时定位使用该加密 Key 的 Identifier。';
-COMMENT ON INDEX iam.ix_credential_materials_key IS '密钥轮换或失陷处置时定位使用该 Key 的认证材料。';
+COMMENT ON INDEX iam.ix_credential_materials_authenticator IS '认证时按认证器、材料类型和版本读取安全材料。';
 COMMENT ON INDEX iam.ix_recovery_codes_batch IS '恢复流程按批次和状态定位恢复码。';
 COMMENT ON INDEX iam.ix_login_steps_transaction IS '登录编排器按事务读取步骤。';
 COMMENT ON INDEX iam.ix_tenant_domains_tenant IS '租户管理按状态读取域名。';
 COMMENT ON INDEX iam.ix_group_members_group IS '用户组管理读取当前和历史成员。';
 COMMENT ON INDEX iam.ix_session_participants_session IS '统一退出按会话读取 RP 参与者。';
+COMMENT ON INDEX iam.ix_refresh_tokens_family IS 'Refresh Token 轮换按 Family 和序号定位实例。';
 COMMENT ON INDEX iam.ix_agreement_acceptances_user IS '按用户查询协议接受证据。';
 COMMENT ON INDEX iam.ix_consent_aggregates_subject IS '按主体和目的定位 Consent 聚合。';
 COMMENT ON INDEX iam.ix_legal_holds_active IS '隐私处理前定位生效的 Legal Hold。';
 COMMENT ON INDEX iam.ix_data_export_privacy_request IS '按隐私请求定位导出物。';
-COMMENT ON INDEX iam.ix_data_export_artifacts_key IS '密钥轮换或失陷处置时定位使用该 Key 的导出物。';
+COMMENT ON INDEX iam.ix_deletion_proofs_privacy_request IS '按隐私请求汇总下游删除证明。';
+COMMENT ON INDEX iam.ix_risk_assessment_signals_assessment IS '按评估读取参与信号。';
 COMMENT ON INDEX iam.ix_approval_actions_reviewer IS '审计审批人历史动作。';
 COMMENT ON INDEX iam.ix_jwks_release_keys_release IS '生成 JWKS 时按发布和顺序读取 Key。';
-COMMENT ON INDEX iam.ix_jwks_release_keys_key IS '密钥撤销或轮换时定位包含该 Key 的 JWKS 发布。';
-COMMENT ON INDEX iam.ix_certificates_key IS '密钥撤销或轮换时定位由该 Key 支撑的证书。';
-COMMENT ON INDEX iam.ix_machine_credentials_key IS '密钥失陷处置时定位引用该 Key 的机器凭证。';
-COMMENT ON INDEX iam.ix_machine_credentials_certificate IS '证书撤销或轮换时定位引用该证书的机器凭证。';
+COMMENT ON INDEX iam.ix_configuration_release_items_release IS '激活发布时按顺序读取配置项。';
 COMMENT ON INDEX iam.ix_webhook_signing_keys_subscription IS '投递时定位订阅当前签名 Key。';
-COMMENT ON INDEX iam.ix_webhook_signing_keys_key IS '密钥撤销或轮换时定位引用该 Key 的 Webhook 签名配置。';
-COMMENT ON INDEX iam.ix_webhook_deliveries_event_subscription IS '按事件来源、事件和订阅定位投递事实，支撑去重诊断与回放检查。';
 COMMENT ON INDEX iam.ix_consumer_checkpoints_watermark IS '查询消费者安全水位传播进度。';
 COMMENT ON INDEX iam.ix_contact_reachability_state IS '按渠道和可达性状态运营联系方式。';
 COMMENT ON INDEX iam.ix_migration_items_platform IS '从平台对象追溯迁移项。';

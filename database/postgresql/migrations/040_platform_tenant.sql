@@ -29,7 +29,7 @@ COMMENT ON COLUMN iam.business_lines.state IS '业务线接入状态；由 PLT �
 COMMENT ON COLUMN iam.business_lines.active_configuration_id IS '可空；逻辑引用 iam.configuration_versions.id。';
 COMMENT ON COLUMN iam.business_lines.state_changed_at IS '状态最近变化业务时间。';
 COMMENT ON COLUMN iam.business_lines.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.business_lines.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.business_lines.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.business_lines.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.applications (
@@ -59,7 +59,7 @@ COMMENT ON COLUMN iam.applications.owner_id IS '所有者逻辑 ID。';
 COMMENT ON COLUMN iam.applications.state IS '应用接入状态；由 PLT 代码维护。';
 COMMENT ON COLUMN iam.applications.metadata IS '非秘密应用元数据，代码按 Schema 校验。';
 COMMENT ON COLUMN iam.applications.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.applications.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.applications.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.applications.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.oauth_clients (
@@ -72,6 +72,7 @@ CREATE TABLE iam.oauth_clients (
     state varchar(40) NOT NULL,
     client_security_epoch bigint NOT NULL DEFAULT 0,
     active_configuration_id uuid,
+    configuration jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     row_version bigint NOT NULL DEFAULT 0,
@@ -88,9 +89,10 @@ COMMENT ON COLUMN iam.oauth_clients.owner_type IS 'Client 所有者类型。';
 COMMENT ON COLUMN iam.oauth_clients.owner_id IS 'Client 所有者逻辑 ID。';
 COMMENT ON COLUMN iam.oauth_clients.state IS 'Client 状态；生命周期由 OAP 领域持有，CTRL 只提供配置审批事实。';
 COMMENT ON COLUMN iam.oauth_clients.client_security_epoch IS 'Client 安全水位；密钥或安全配置变化时由代码递增。';
-COMMENT ON COLUMN iam.oauth_clients.active_configuration_id IS '可空；逻辑引用 iam.configuration_versions.id；协议配置内容只保存在不可变配置版本中。';
+COMMENT ON COLUMN iam.oauth_clients.active_configuration_id IS '可空；逻辑引用 iam.configuration_versions.id。';
+COMMENT ON COLUMN iam.oauth_clients.configuration IS '非秘密协议配置快照；Secret 和私钥不得写入。';
 COMMENT ON COLUMN iam.oauth_clients.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.oauth_clients.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.oauth_clients.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.oauth_clients.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.api_resources (
@@ -102,7 +104,7 @@ CREATE TABLE iam.api_resources (
     owner_id uuid NOT NULL,
     state varchar(40) NOT NULL,
     token_profile varchar(80) NOT NULL,
-    active_configuration_id uuid,
+    configuration jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     row_version bigint NOT NULL DEFAULT 0,
@@ -118,9 +120,9 @@ COMMENT ON COLUMN iam.api_resources.owner_type IS '资源所有者类型。';
 COMMENT ON COLUMN iam.api_resources.owner_id IS '资源所有者逻辑 ID。';
 COMMENT ON COLUMN iam.api_resources.state IS '资源状态；生命周期由 OAP 领域持有，API 领域只消费资源登记事实。';
 COMMENT ON COLUMN iam.api_resources.token_profile IS '引用的 Token Profile 代码。';
-COMMENT ON COLUMN iam.api_resources.active_configuration_id IS '可空；逻辑引用 iam.configuration_versions.id；资源验证配置内容只保存在不可变配置版本中。';
+COMMENT ON COLUMN iam.api_resources.configuration IS '资源验证配置，不得含私钥。';
 COMMENT ON COLUMN iam.api_resources.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.api_resources.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.api_resources.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.api_resources.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.oauth_scopes (
@@ -148,7 +150,7 @@ COMMENT ON COLUMN iam.oauth_scopes.sensitivity IS '敏感级别代码。';
 COMMENT ON COLUMN iam.oauth_scopes.consent_required IS '是否通常需要用户同意；最终判断由代码和策略完成。';
 COMMENT ON COLUMN iam.oauth_scopes.state IS 'Scope 状态。';
 COMMENT ON COLUMN iam.oauth_scopes.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.oauth_scopes.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.oauth_scopes.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.oauth_scopes.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.tenants (
@@ -179,7 +181,7 @@ COMMENT ON COLUMN iam.tenants.state IS '租户状态；合法转换由 TENANT �
 COMMENT ON COLUMN iam.tenants.tenant_security_epoch IS '租户安全水位，由代码在全局撤销或安全变更时递增。';
 COMMENT ON COLUMN iam.tenants.active_configuration_id IS '可空；逻辑引用 iam.configuration_versions.id。';
 COMMENT ON COLUMN iam.tenants.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.tenants.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.tenants.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.tenants.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.tenant_domains (
@@ -207,7 +209,7 @@ COMMENT ON COLUMN iam.tenant_domains.verification_token_hash IS '可空；域名
 COMMENT ON COLUMN iam.tenant_domains.verified_at IS '可空；验证成功时间。';
 COMMENT ON COLUMN iam.tenant_domains.state IS '域名使用状态。';
 COMMENT ON COLUMN iam.tenant_domains.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.tenant_domains.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.tenant_domains.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.tenant_domains.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.organizations (
@@ -236,7 +238,7 @@ COMMENT ON COLUMN iam.organizations.external_mapping_digest IS '可空；外部�
 COMMENT ON COLUMN iam.organizations.state IS '组织状态。';
 COMMENT ON COLUMN iam.organizations.path_hint IS '可空；查询优化路径快照，不作为权威层级规则。';
 COMMENT ON COLUMN iam.organizations.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.organizations.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.organizations.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.organizations.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.memberships (
@@ -250,13 +252,11 @@ CREATE TABLE iam.memberships (
     state varchar(40) NOT NULL,
     joined_at timestamptz,
     left_at timestamptz,
-    current_occupancy_slot smallint DEFAULT 1,
     attributes jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     row_version bigint NOT NULL DEFAULT 0,
-    CONSTRAINT uq_memberships_current UNIQUE (scope_type, scope_id, user_id, current_occupancy_slot),
-    CONSTRAINT ck_memberships_current_slot CHECK (current_occupancy_slot IS NULL OR current_occupancy_slot = 1),
+    CONSTRAINT uq_memberships_scope_user UNIQUE (scope_type, scope_id, user_id),
     CONSTRAINT ck_memberships_version CHECK (row_version >= 0)
 );
 COMMENT ON TABLE iam.memberships IS '用户与业务线、租户或组织的成员关系；作用域一致性和业务资格由 TENANT 代码校验。';
@@ -270,10 +270,9 @@ COMMENT ON COLUMN iam.memberships.organization_id IS '可空；逻辑引用 iam.
 COMMENT ON COLUMN iam.memberships.state IS '成员状态；邀请、加入、暂停和离开由 TENANT 代码维护。';
 COMMENT ON COLUMN iam.memberships.joined_at IS '可空；成员关系生效时间。';
 COMMENT ON COLUMN iam.memberships.left_at IS '可空；成员关系结束时间。';
-COMMENT ON COLUMN iam.memberships.current_occupancy_slot IS '可空；新记录默认占位 1，终态历史记录写 NULL。数据库只保证同一作用域和用户最多一个当前 Membership；何时释放占位由 TENANT 状态机决定。';
 COMMENT ON COLUMN iam.memberships.attributes IS '作用域内成员扩展属性；代码按 Schema 校验。';
 COMMENT ON COLUMN iam.memberships.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.memberships.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.memberships.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.memberships.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.invitations (
@@ -293,7 +292,7 @@ CREATE TABLE iam.invitations (
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT uq_invitations_token UNIQUE (token_hash),
-    CONSTRAINT ck_invitations_inviter CHECK ((inviter_user_id IS NOT NULL) <> (inviter_machine_id IS NOT NULL)),
+    CONSTRAINT ck_invitations_inviter CHECK (inviter_user_id IS NOT NULL OR inviter_machine_id IS NOT NULL),
     CONSTRAINT ck_invitations_version CHECK (row_version >= 0),
     CONSTRAINT ck_invitations_expiry CHECK (expires_at > created_at)
 );
@@ -311,7 +310,7 @@ COMMENT ON COLUMN iam.invitations.expires_at IS '邀请过期时间。';
 COMMENT ON COLUMN iam.invitations.accepted_by_user_id IS '可空；接受者逻辑引用 iam.global_users.id。';
 COMMENT ON COLUMN iam.invitations.accepted_at IS '可空；接受时间。';
 COMMENT ON COLUMN iam.invitations.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.invitations.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.invitations.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.invitations.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.groups (
@@ -339,7 +338,7 @@ COMMENT ON COLUMN iam.groups.group_type IS '用户组类型，例如 STATIC、DI
 COMMENT ON COLUMN iam.groups.state IS '用户组状态。';
 COMMENT ON COLUMN iam.groups.source_connector_id IS '可空；逻辑引用 iam.directory_connectors.id。';
 COMMENT ON COLUMN iam.groups.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.groups.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.groups.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.groups.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.group_members (
@@ -423,7 +422,7 @@ COMMENT ON COLUMN iam.resource_quotas.state IS '配额记录状态。';
 COMMENT ON COLUMN iam.resource_quotas.effective_at IS '生效时间。';
 COMMENT ON COLUMN iam.resource_quotas.expires_at IS '可空；失效时间。';
 COMMENT ON COLUMN iam.resource_quotas.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.resource_quotas.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.resource_quotas.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.resource_quotas.row_version IS '乐观锁版本。';
 
 CREATE INDEX ix_applications_business_line ON iam.applications (business_line_id, state);

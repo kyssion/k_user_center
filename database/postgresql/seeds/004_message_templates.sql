@@ -28,28 +28,10 @@ SELECT
     encode(sha256(convert_to(coalesce(subject_template, '') || E'\n' || content_template || E'\n' || variable_schema::text, 'UTF8')), 'hex'),
     'DRAFT', NULL
 FROM seed
-ON CONFLICT ON CONSTRAINT uq_message_template_version DO NOTHING
-RETURNING template_code, channel, locale, version
-), matched AS (
-SELECT seed.template_code, seed.channel, seed.locale
-FROM seed
-WHERE EXISTS (
-          SELECT 1
-          FROM applied
-          WHERE applied.template_code = seed.template_code
-            AND applied.channel = seed.channel
-            AND applied.locale = seed.locale
-            AND applied.version = 1
-      )
-   OR EXISTS (
-       SELECT 1
-       FROM iam.message_template_versions current_template
-       WHERE current_template.template_code = seed.template_code
-         AND current_template.channel = seed.channel
-         AND current_template.locale = seed.locale
-         AND current_template.version = 1
-         AND current_template.id = seed.id
-         AND current_template.content_digest = encode(sha256(convert_to(coalesce(seed.subject_template, '') || E'\n' || seed.content_template || E'\n' || seed.variable_schema::text, 'UTF8')), 'hex')
-   )
+ON CONFLICT ON CONSTRAINT uq_message_template_version DO UPDATE
+SET id = current_template.id
+WHERE current_template.id = EXCLUDED.id
+  AND current_template.content_digest = EXCLUDED.content_digest
+RETURNING 1
 )
-SELECT 1 / CASE WHEN (SELECT count(*) FROM matched) = (SELECT count(*) FROM seed) THEN 1 ELSE 0 END AS seed_content_match;
+SELECT 1 / CASE WHEN (SELECT count(*) FROM applied) = (SELECT count(*) FROM seed) THEN 1 ELSE 0 END AS seed_content_match;

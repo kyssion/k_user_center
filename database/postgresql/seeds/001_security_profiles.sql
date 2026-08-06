@@ -20,23 +20,11 @@ SELECT
     payload, encode(sha256(convert_to(payload::text, 'UTF8')), 'hex'),
     'DRAFT', 'SYSTEM_BOOTSTRAP', '00000000-0000-0000-0000-000000000001'::uuid, NULL
 FROM seed
-ON CONFLICT ON CONSTRAINT uq_configuration_version DO NOTHING
-RETURNING config_code
-), matched AS (
-SELECT seed.config_code
-FROM seed
-WHERE EXISTS (SELECT 1 FROM applied WHERE applied.config_code = seed.config_code)
-   OR EXISTS (
-       SELECT 1
-       FROM iam.configuration_versions current_version
-       WHERE current_version.config_type = 'SECURITY_PROFILE'
-         AND current_version.config_code = seed.config_code
-         AND current_version.scope_type = 'PLATFORM'
-         AND current_version.scope_id IS NULL
-         AND current_version.version = 1
-         AND current_version.id = seed.id
-         AND current_version.schema_version = 2
-         AND current_version.payload_digest = encode(sha256(convert_to(seed.payload::text, 'UTF8')), 'hex')
-   )
+ON CONFLICT ON CONSTRAINT uq_configuration_version DO UPDATE
+SET id = current_version.id
+WHERE current_version.id = EXCLUDED.id
+  AND current_version.schema_version = EXCLUDED.schema_version
+  AND current_version.payload_digest = EXCLUDED.payload_digest
+RETURNING 1
 )
-SELECT 1 / CASE WHEN (SELECT count(*) FROM matched) = (SELECT count(*) FROM seed) THEN 1 ELSE 0 END AS seed_content_match;
+SELECT 1 / CASE WHEN (SELECT count(*) FROM applied) = (SELECT count(*) FROM seed) THEN 1 ELSE 0 END AS seed_content_match;

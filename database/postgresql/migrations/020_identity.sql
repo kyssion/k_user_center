@@ -2,7 +2,7 @@
 
 SET ROLE iam_owner;
 
--- 身份主体与标识。确定内部引用由 RESTRICT Foreign Key 校验存在性；归属、换绑、合并、隔离期和多态作用域由 ID 领域代码处理。
+-- 身份主体与标识。所有关联均为逻辑引用，归属、换绑、合并和隔离期由 ID 领域代码处理。
 
 CREATE TABLE iam.global_users (
     id uuid PRIMARY KEY,
@@ -38,7 +38,7 @@ COMMENT ON COLUMN iam.global_users.guest_expires_at IS '可空；Guest 身份到
 COMMENT ON COLUMN iam.global_users.user_security_epoch IS '用户安全水位；撤销和敏感变更时由代码原子递增。';
 COMMENT ON COLUMN iam.global_users.state_changed_at IS '生命周期状态最近变化业务时间。';
 COMMENT ON COLUMN iam.global_users.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.global_users.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.global_users.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.global_users.row_version IS '聚合乐观锁版本。';
 
 CREATE TABLE iam.user_subjects (
@@ -48,32 +48,19 @@ CREATE TABLE iam.user_subjects (
     subject_id varchar(128) NOT NULL,
     subject_type varchar(40) NOT NULL,
     generation_version integer NOT NULL,
-    retired_at timestamptz,
-    current_subject_slot smallint DEFAULT 1,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT uq_user_subject_client_subject UNIQUE (client_id, subject_id),
-    CONSTRAINT uq_user_subject_current UNIQUE (user_id, client_id, current_subject_slot),
-    CONSTRAINT ck_user_subject_version CHECK (generation_version > 0 AND row_version >= 0),
-    CONSTRAINT ck_user_subject_current_slot CHECK (
-        (current_subject_slot = 1 AND retired_at IS NULL)
-        OR (current_subject_slot IS NULL AND retired_at IS NOT NULL)
-    )
+    CONSTRAINT uq_user_subject_user_client UNIQUE (user_id, client_id),
+    CONSTRAINT ck_user_subject_version CHECK (generation_version > 0)
 );
-COMMENT ON TABLE iam.user_subjects IS '用户面向 Client 的追加式公开 Subject 分配；历史 Subject 永久保留，Pairwise 生成和轮换条件由 ID 代码实现。';
+COMMENT ON TABLE iam.user_subjects IS '用户面向 Client 的公开 Subject 映射；Pairwise 算法和轮换规则由 ID 代码实现。';
 COMMENT ON COLUMN iam.user_subjects.id IS '应用生成的内部 UUIDv7。';
-COMMENT ON COLUMN iam.user_subjects.user_id IS '逻辑引用 iam.global_users.id；数据库 FK 校验存在性，ID 代码校验主体生命周期。';
+COMMENT ON COLUMN iam.user_subjects.user_id IS '逻辑引用 iam.global_users.id；数据库不创建外键。';
 COMMENT ON COLUMN iam.user_subjects.client_id IS '逻辑引用 iam.oauth_clients.id；写入前校验 Client 状态和业务线。';
 COMMENT ON COLUMN iam.user_subjects.subject_id IS '对当前 Client 唯一的不可推断 Subject，可写入 Token。';
 COMMENT ON COLUMN iam.user_subjects.subject_type IS 'Subject 类型，例如 PUBLIC 或 PAIRWISE；代码维护合法值。';
 COMMENT ON COLUMN iam.user_subjects.generation_version IS 'Subject 生成方案正整数版本。';
-COMMENT ON COLUMN iam.user_subjects.retired_at IS '可空；旧 Subject 退出当前映射的业务时间，历史值不得删除或复用。';
-COMMENT ON COLUMN iam.user_subjects.current_subject_slot IS '当前占位固定为 1；历史记录为 NULL，用唯一约束保证同一 User 与 Client 只有一个当前 Subject。';
 COMMENT ON COLUMN iam.user_subjects.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.user_subjects.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
-COMMENT ON COLUMN iam.user_subjects.row_version IS 'Subject 当前占位切换的乐观锁版本。';
-COMMENT ON CONSTRAINT uq_user_subject_current ON iam.user_subjects IS '同一 User 与 Client 最多一个当前 Subject；轮换必须先释放旧占位并保留历史记录。';
 
 CREATE TABLE iam.identifiers (
     id uuid PRIMARY KEY,
@@ -106,11 +93,11 @@ COMMENT ON COLUMN iam.identifiers.value_fingerprint IS '可空；受控去重或
 COMMENT ON COLUMN iam.identifiers.normalization_version IS '规范化算法正整数版本。';
 COMMENT ON COLUMN iam.identifiers.encryption_algorithm IS '可空；密文算法标识；无可恢复值时为空。';
 COMMENT ON COLUMN iam.identifiers.encryption_version IS '可空；密文封装版本。';
-COMMENT ON COLUMN iam.identifiers.key_id IS '可空；逻辑引用 iam.cryptographic_keys.id；KMS/HSM 外部引用先登记为密钥元数据，数据库 FK 校验存在性。';
+COMMENT ON COLUMN iam.identifiers.key_id IS '可空；逻辑引用 iam.cryptographic_keys.id 或外部 KMS Key 元数据。';
 COMMENT ON COLUMN iam.identifiers.verification_state IS '验证状态；Challenge 和状态转换由代码控制。';
 COMMENT ON COLUMN iam.identifiers.verified_at IS '可空；最近验证成功业务时间。';
 COMMENT ON COLUMN iam.identifiers.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.identifiers.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.identifiers.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.identifiers.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.identifier_claims (
@@ -137,14 +124,14 @@ COMMENT ON COLUMN iam.identifier_claims.scope_type IS '唯一性作用域类型�
 COMMENT ON COLUMN iam.identifier_claims.scope_id IS '可空；作用域逻辑 ID；NULL 与 NULL 按唯一值处理。';
 COMMENT ON COLUMN iam.identifier_claims.identifier_type IS '标识类型代码。';
 COMMENT ON COLUMN iam.identifier_claims.blind_index IS '标识规范化值 HMAC 盲索引。';
-COMMENT ON COLUMN iam.identifier_claims.identifier_id IS '逻辑引用 iam.identifiers.id；数据库 FK 校验存在性，ID 代码校验占用和绑定状态。';
+COMMENT ON COLUMN iam.identifier_claims.identifier_id IS '逻辑引用 iam.identifiers.id；数据库不创建外键。';
 COMMENT ON COLUMN iam.identifier_claims.owner_user_id IS '逻辑引用 iam.global_users.id；代码校验归属与状态。';
 COMMENT ON COLUMN iam.identifier_claims.claim_state IS '占用状态；状态机由 ID 领域维护。';
 COMMENT ON COLUMN iam.identifier_claims.claimed_at IS '占用生效业务时间。';
 COMMENT ON COLUMN iam.identifier_claims.released_at IS '可空；释放业务时间。';
 COMMENT ON COLUMN iam.identifier_claims.isolation_until IS '可空；释放后的安全隔离截止时间。';
 COMMENT ON COLUMN iam.identifier_claims.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.identifier_claims.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.identifier_claims.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.identifier_claims.row_version IS '乐观锁版本。';
 COMMENT ON CONSTRAINT uq_identifier_claim ON iam.identifier_claims IS '维持同一作用域内标识盲索引只有一个占用记录。';
 
@@ -191,11 +178,7 @@ CREATE TABLE iam.user_identities (
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT uq_user_identity_external UNIQUE (provider_id, external_subject_digest),
-    CONSTRAINT ck_user_identity_target CHECK (
-        (identifier_id IS NOT NULL AND provider_id IS NULL AND external_subject_digest IS NULL)
-        OR
-        (identifier_id IS NULL AND provider_id IS NOT NULL AND external_subject_digest IS NOT NULL)
-    ),
+    CONSTRAINT ck_user_identity_target CHECK (identifier_id IS NOT NULL OR external_subject_digest IS NOT NULL),
     CONSTRAINT ck_user_identity_version CHECK (row_version >= 0)
 );
 COMMENT ON TABLE iam.user_identities IS '用户可登录身份，包括本地标识、社交和企业联合身份；链接生命周期由 ID 领域持有，FED 提供外部身份源事实。';
@@ -211,9 +194,8 @@ COMMENT ON COLUMN iam.user_identities.linked_at IS '身份链接生效业务时�
 COMMENT ON COLUMN iam.user_identities.unlinked_at IS '可空；身份解绑业务时间。';
 COMMENT ON COLUMN iam.user_identities.metadata IS '非秘密身份元数据；代码按类型 Schema 校验。';
 COMMENT ON COLUMN iam.user_identities.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.user_identities.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.user_identities.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.user_identities.row_version IS '乐观锁版本。';
-COMMENT ON CONSTRAINT ck_user_identity_target ON iam.user_identities IS '本地身份只引用 Identifier；联合身份必须同时保存 Provider 和外部稳定键摘要，禁止缺项或双重目标。';
 
 CREATE TABLE iam.user_aliases (
     id uuid PRIMARY KEY,

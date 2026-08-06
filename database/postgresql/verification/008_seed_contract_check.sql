@@ -9,7 +9,9 @@ DECLARE
     invalid_baseline boolean;
     invalid_seed_state text;
     permission_count integer;
+    missing_permissions text;
     template_count integer;
+    missing_templates text;
     event_schema_count integer;
     missing_event_types text;
     invalid_event_schemas text;
@@ -201,9 +203,54 @@ BEGIN
       FROM iam.permissions
      WHERE id::text LIKE '21000000-%';
 
+    SELECT string_agg(required.permission_code, ', ' ORDER BY required.permission_code)
+      INTO missing_permissions
+      FROM (VALUES
+        ('iam.user.read'),('iam.user.manage'),('iam.credential.manage'),('iam.tenant.manage'),
+        ('iam.authorization.manage'),('iam.audit.read'),('iam.key.manage'),('iam.config.release'),
+        ('iam.event.replay'),('iam.privacy.process'),('iam.identifier.read'),('iam.identifier.manage'),
+        ('iam.authenticator.read'),('iam.session.read'),('iam.session.revoke'),('iam.client.read'),
+        ('iam.client.manage'),('iam.tenant.read'),('iam.membership.read'),('iam.membership.manage'),
+        ('iam.authorization.read'),('iam.policy.read'),('iam.policy.publish'),('iam.consent.read'),
+        ('iam.consent.manage'),('iam.privacy.read'),('iam.risk.read'),('iam.risk.investigate'),
+        ('iam.approval.read'),('iam.approval.review'),('iam.delegation.read'),('iam.delegation.manage'),
+        ('iam.key.read'),('iam.config.read'),('iam.event.read'),('iam.event.publish'),
+        ('iam.webhook.manage'),('iam.message.read'),('iam.message.send'),('iam.message.template.manage'),
+        ('iam.migration.read'),('iam.migration.manage'),('iam.profile.read'),('iam.profile.manage'),
+        ('iam.federation.read'),('iam.federation.manage'),('iam.machine.read'),('iam.machine.manage')
+      ) AS required(permission_code)
+     WHERE NOT EXISTS (
+        SELECT 1
+          FROM iam.permissions p
+         WHERE p.permission_code = required.permission_code
+           AND p.id::text LIKE '21000000-%'
+     );
+
     SELECT count(*) INTO template_count
       FROM iam.message_template_versions
      WHERE id::text LIKE '40000000-%';
+
+    SELECT string_agg(format('%s/%s/%s', required.template_code, required.channel, required.locale), ', '
+                      ORDER BY required.template_code, required.channel, required.locale)
+      INTO missing_templates
+      FROM (VALUES
+        ('LOGIN_OTP','SMS','zh-CN'),('SECURITY_ALERT','EMAIL','zh-CN'),
+        ('AUTHENTICATOR_CHANGED','EMAIL','zh-CN'),('PASSWORD_CHANGED','SMS','zh-CN'),
+        ('NEW_DEVICE_LOGIN','EMAIL','zh-CN'),('IDENTIFIER_CHANGED','EMAIL','zh-CN'),
+        ('ACCOUNT_RECOVERY_STARTED','EMAIL','zh-CN'),('ACCOUNT_RECOVERY_COMPLETED','EMAIL','zh-CN'),
+        ('HIGH_RISK_LOGIN','SMS','zh-CN'),('ACCOUNT_FROZEN','EMAIL','zh-CN'),
+        ('ACCOUNT_DELETION_REQUESTED','EMAIL','zh-CN'),('DATA_EXPORT_READY','EMAIL','zh-CN'),
+        ('TENANT_OWNERSHIP_TRANSFER','EMAIL','zh-CN')
+      ) AS required(template_code, channel, locale)
+     WHERE NOT EXISTS (
+        SELECT 1
+          FROM iam.message_template_versions t
+         WHERE t.template_code = required.template_code
+           AND t.channel = required.channel
+           AND t.locale = required.locale
+           AND t.version = 1
+           AND t.id::text LIKE '40000000-%'
+     );
 
     SELECT count(*) INTO event_schema_count
       FROM iam.event_schema_versions
@@ -213,16 +260,20 @@ BEGIN
       INTO missing_event_types
       FROM (VALUES
         ('user.created'),('user.lifecycle.changed'),('user.security_state.changed'),
-        ('identity.bound'),('identity.unbound'),('identifier.verified'),('identifier.reassigned'),
-        ('user.merge.started'),('user.merge.completed'),('user.merge.failed'),('user.anonymized'),
-        ('risk.detected'),('risk.disposition.changed'),('authenticator.compromised'),
-        ('token.family.compromised'),('assurance.changed'),('client.compromised'),('session.revoked')
+        ('identity.bound'),('identity.unbound'),('user.merge.completed'),('profile.updated'),
+        ('membership.changed'),('authenticator.changed'),('authenticator.compromised'),('session.revoked'),
+        ('consent.changed'),('consent.revoked'),('authorization.policy_changed'),
+        ('authorization.decision_recorded'),('risk.level_changed'),('security.epoch_changed'),
+        ('privacy.request_changed'),('identifier.verified'),('identifier.reassigned'),
+        ('user.merge.started'),('user.merge.failed'),('user.anonymized'),('risk.detected'),
+        ('risk.disposition.changed'),('token.family.compromised'),('assurance.changed'),('client.compromised')
       ) AS required(event_type)
      WHERE NOT EXISTS (
         SELECT 1
           FROM iam.event_schema_versions e
          WHERE e.event_type = required.event_type
            AND e.schema_version = 1
+           AND e.id::text LIKE '50000000-%'
      );
 
     SELECT string_agg(event_type, ', ' ORDER BY event_type)
@@ -245,12 +296,14 @@ BEGIN
        );
 
     IF missing_profiles IS NOT NULL OR invalid_profiles IS NOT NULL OR missing_slos IS NOT NULL OR missing_durations IS NOT NULL
-       OR invalid_baseline OR invalid_seed_state IS NOT NULL OR permission_count < 48 OR template_count < 13
-       OR event_schema_count < 28 OR missing_event_types IS NOT NULL OR invalid_event_schemas IS NOT NULL THEN
-        RAISE EXCEPTION 'Seed 契约失败：missing_profiles=%, invalid_profiles=%, missing_slos=%, missing_durations=%, invalid_baseline=%, invalid_state=%, permissions=%, templates=%, event_schemas=%, missing_event_types=%, invalid_event_schemas=%',
+       OR invalid_baseline OR invalid_seed_state IS NOT NULL OR permission_count <> 48 OR missing_permissions IS NOT NULL
+       OR template_count <> 13 OR missing_templates IS NOT NULL
+       OR event_schema_count <> 28 OR missing_event_types IS NOT NULL OR invalid_event_schemas IS NOT NULL THEN
+        RAISE EXCEPTION 'Seed 契约失败：missing_profiles=%, invalid_profiles=%, missing_slos=%, missing_durations=%, invalid_baseline=%, invalid_state=%, permissions=%, missing_permissions=%, templates=%, missing_templates=%, event_schemas=%, missing_event_types=%, invalid_event_schemas=%',
             coalesce(missing_profiles, '<none>'), coalesce(invalid_profiles, '<none>'), coalesce(missing_slos, '<none>'),
             coalesce(missing_durations, '<none>'), invalid_baseline, coalesce(invalid_seed_state, '<none>'),
-            permission_count, template_count, event_schema_count, coalesce(missing_event_types, '<none>'), coalesce(invalid_event_schemas, '<none>');
+            permission_count, coalesce(missing_permissions, '<none>'), template_count, coalesce(missing_templates, '<none>'),
+            event_schema_count, coalesce(missing_event_types, '<none>'), coalesce(invalid_event_schemas, '<none>');
     END IF;
 END
 $seed_contract$;

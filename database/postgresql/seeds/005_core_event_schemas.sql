@@ -34,7 +34,7 @@ WITH seed(id, event_type, json_schema) AS (
         ('50000000-0000-0000-0000-000000000027'::uuid, 'assurance.changed', '{"type":"object","properties":{"assertion_id":{"type":"string","format":"uuid"},"previous_level":{"type":["string","null"]},"current_level":{"type":"string"}},"required":["assertion_id","current_level"],"additionalProperties":false}'::jsonb),
         ('50000000-0000-0000-0000-000000000028'::uuid, 'client.compromised', '{"type":"object","properties":{"client_id":{"type":"string","format":"uuid"},"client_security_epoch":{"type":"integer","minimum":0},"reason_code":{"type":"string"}},"required":["client_id","client_security_epoch","reason_code"],"additionalProperties":false}'::jsonb)
 ), applied AS (
-INSERT INTO iam.event_schema_versions AS current_schema (
+INSERT INTO iam.event_schema_versions AS existing_schema (
     id, event_type, schema_version, compatibility_mode, json_schema, schema_digest, state, published_at
 )
 SELECT
@@ -42,25 +42,10 @@ SELECT
     encode(sha256(convert_to(json_schema::text, 'UTF8')), 'hex'),
     'DRAFT', NULL
 FROM seed
-ON CONFLICT ON CONSTRAINT uq_event_schema_version DO NOTHING
-RETURNING event_type, schema_version
-), matched AS (
-SELECT seed.event_type
-FROM seed
-WHERE EXISTS (
-          SELECT 1
-          FROM applied
-          WHERE applied.event_type = seed.event_type
-            AND applied.schema_version = 1
-      )
-   OR EXISTS (
-       SELECT 1
-       FROM iam.event_schema_versions current_schema
-       WHERE current_schema.event_type = seed.event_type
-         AND current_schema.schema_version = 1
-         AND current_schema.id = seed.id
-         AND current_schema.compatibility_mode = 'BACKWARD'
-         AND current_schema.schema_digest = encode(sha256(convert_to(seed.json_schema::text, 'UTF8')), 'hex')
-   )
+ON CONFLICT ON CONSTRAINT uq_event_schema_version DO UPDATE
+SET id = existing_schema.id
+WHERE existing_schema.id = EXCLUDED.id
+  AND existing_schema.schema_digest = EXCLUDED.schema_digest
+RETURNING 1
 )
-SELECT 1 / CASE WHEN (SELECT count(*) FROM matched) = (SELECT count(*) FROM seed) THEN 1 ELSE 0 END AS seed_content_match;
+SELECT 1 / CASE WHEN (SELECT count(*) FROM applied) = (SELECT count(*) FROM seed) THEN 1 ELSE 0 END AS seed_content_match;

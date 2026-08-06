@@ -32,7 +32,7 @@ COMMENT ON COLUMN iam.message_providers.state IS '供应商状态。';
 COMMENT ON COLUMN iam.message_providers.active_configuration_id IS '逻辑引用 iam.configuration_versions.id。';
 COMMENT ON COLUMN iam.message_providers.priority_hint IS '非负静态排序提示；实际路由由代码策略决定。';
 COMMENT ON COLUMN iam.message_providers.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.message_providers.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.message_providers.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.message_providers.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.message_template_versions (
@@ -49,9 +49,8 @@ CREATE TABLE iam.message_template_versions (
     state varchar(40) NOT NULL,
     published_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT uq_message_template_version UNIQUE (template_code, channel, locale, version),
-    CONSTRAINT ck_message_template_version CHECK (version > 0 AND row_version >= 0)
+    CONSTRAINT ck_message_template_version CHECK (version > 0)
 );
 COMMENT ON TABLE iam.message_template_versions IS '消息模板不可变版本；变量校验、转义、敏感信息控制和审批由 MSG/CTRL 代码执行。';
 COMMENT ON COLUMN iam.message_template_versions.id IS '应用生成的模板版本 UUIDv7。';
@@ -67,7 +66,6 @@ COMMENT ON COLUMN iam.message_template_versions.approval_case_id IS '可空；�
 COMMENT ON COLUMN iam.message_template_versions.state IS '模板版本状态。';
 COMMENT ON COLUMN iam.message_template_versions.published_at IS '可空；发布时间。';
 COMMENT ON COLUMN iam.message_template_versions.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.message_template_versions.row_version IS '审批和发布生命周期元数据的乐观锁版本；模板内容字段不可更新。';
 
 CREATE TABLE iam.message_requests (
     id uuid NOT NULL,
@@ -88,14 +86,13 @@ CREATE TABLE iam.message_requests (
     expires_at timestamptz NOT NULL,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     completed_at timestamptz,
-    CONSTRAINT pk_message_requests PRIMARY KEY (id, request_id),
-    CONSTRAINT uq_message_requests_request_id UNIQUE (request_id),
+    CONSTRAINT pk_message_requests PRIMARY KEY (id, created_at),
     CONSTRAINT ck_message_request_priority CHECK (priority >= 0),
     CONSTRAINT ck_message_request_expiry CHECK (expires_at > created_at)
-) PARTITION BY HASH (request_id);
-COMMENT ON TABLE iam.message_requests IS '消息发送请求；按 request_id Hash 分区并由数据库保证请求 ID 全局唯一，目标可为密文，限速、抑制、路由和模板渲染由 MSG 代码处理。';
+) PARTITION BY RANGE (created_at);
+COMMENT ON TABLE iam.message_requests IS '消息发送请求；按 created_at 月度分区，目标可为密文，限速、抑制、路由和模板渲染由 MSG 代码处理。';
 COMMENT ON COLUMN iam.message_requests.id IS '应用生成的记录 UUIDv7。';
-COMMENT ON COLUMN iam.message_requests.request_id IS '全局消息请求 UUID；数据库全局唯一。';
+COMMENT ON COLUMN iam.message_requests.request_id IS '全局消息请求 UUID；跨分区唯一性由代码保证。';
 COMMENT ON COLUMN iam.message_requests.purpose IS '发送目的代码，例如 LOGIN_OTP、SECURITY_ALERT。';
 COMMENT ON COLUMN iam.message_requests.channel IS '发送渠道。';
 COMMENT ON COLUMN iam.message_requests.target_digest IS '目标联系方式 HMAC 摘要，用于限速和抑制查询。';
@@ -110,9 +107,8 @@ COMMENT ON COLUMN iam.message_requests.state IS '消息请求状态。';
 COMMENT ON COLUMN iam.message_requests.priority IS '非负队列优先级提示。';
 COMMENT ON COLUMN iam.message_requests.scheduled_at IS '可空；计划最早发送时间。';
 COMMENT ON COLUMN iam.message_requests.expires_at IS '超过后不再发送的时间。';
-COMMENT ON COLUMN iam.message_requests.created_at IS '数据库插入时间；用于队列排序、审计和归档查询。';
+COMMENT ON COLUMN iam.message_requests.created_at IS '数据库插入时间和月度分区键。';
 COMMENT ON COLUMN iam.message_requests.completed_at IS '可空；进入终态时间。';
-COMMENT ON CONSTRAINT uq_message_requests_request_id ON iam.message_requests IS '保证消息请求 ID 在数据库内全局唯一并可被投递尝试稳定引用；因此按 request_id Hash 分区。';
 
 CREATE TABLE iam.message_delivery_attempts (
     id uuid NOT NULL,
@@ -179,7 +175,7 @@ COMMENT ON COLUMN iam.contact_reachability.consecutive_failure_count IS '连续�
 COMMENT ON COLUMN iam.contact_reachability.last_success_at IS '可空；最近投递成功时间。';
 COMMENT ON COLUMN iam.contact_reachability.last_failure_at IS '可空；最近投递失败时间。';
 COMMENT ON COLUMN iam.contact_reachability.verified_at IS '可空；最近通过独立验证确认时间。';
-COMMENT ON COLUMN iam.contact_reachability.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.contact_reachability.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.contact_reachability.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.message_suppressions (
@@ -214,7 +210,7 @@ COMMENT ON COLUMN iam.message_suppressions.expires_at IS '可空；抑制失效�
 COMMENT ON COLUMN iam.message_suppressions.source_type IS '抑制来源类型。';
 COMMENT ON COLUMN iam.message_suppressions.source_id IS '可空；来源对象逻辑 ID。';
 COMMENT ON COLUMN iam.message_suppressions.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.message_suppressions.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.message_suppressions.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.message_suppressions.row_version IS '乐观锁版本。';
 
 CREATE INDEX ix_message_providers_route ON iam.message_providers (channel, region_code, state, priority_hint);

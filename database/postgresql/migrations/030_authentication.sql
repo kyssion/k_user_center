@@ -38,7 +38,7 @@ COMMENT ON COLUMN iam.authenticators.replaced_by_id IS '可空；逻辑引用 ia
 COMMENT ON COLUMN iam.authenticators.state_reason IS '可空；最近状态变化原因码。';
 COMMENT ON COLUMN iam.authenticators.metadata IS '非秘密认证器元数据；代码按类型 Schema 校验。';
 COMMENT ON COLUMN iam.authenticators.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.authenticators.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.authenticators.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.authenticators.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.credential_materials (
@@ -53,15 +53,12 @@ CREATE TABLE iam.credential_materials (
     algorithm_parameters jsonb NOT NULL DEFAULT '{}'::jsonb,
     key_id uuid,
     material_version integer NOT NULL,
-    usage_counter bigint NOT NULL DEFAULT 0,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     retired_at timestamptz,
-    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT uq_credential_material_version UNIQUE (authenticator_id, material_type, material_version),
     CONSTRAINT uq_credential_id_digest UNIQUE (credential_id_digest),
     CONSTRAINT ck_credential_material_present CHECK (secret_hash IS NOT NULL OR secret_ciphertext IS NOT NULL OR public_material IS NOT NULL),
-    CONSTRAINT ck_credential_material_version CHECK (material_version > 0 AND usage_counter >= 0 AND row_version >= 0)
+    CONSTRAINT ck_credential_material_version CHECK (material_version > 0)
 );
 COMMENT ON TABLE iam.credential_materials IS '认证凭证安全材料；只保存自适应哈希、应用密文或公钥材料，普通应用角色不得读取。';
 COMMENT ON COLUMN iam.credential_materials.id IS '应用生成的凭证材料 UUIDv7。';
@@ -69,17 +66,14 @@ COMMENT ON COLUMN iam.credential_materials.authenticator_id IS '逻辑引用 iam
 COMMENT ON COLUMN iam.credential_materials.material_type IS '材料类型，例如 PASSWORD_HASH、TOTP_SECRET、PASSKEY_PUBLIC_KEY。';
 COMMENT ON COLUMN iam.credential_materials.secret_hash IS '可空；不可逆凭证哈希，禁止保存可逆密码。';
 COMMENT ON COLUMN iam.credential_materials.secret_ciphertext IS '可空；应用加密后的秘密材料，属于最高敏感级别。';
-COMMENT ON COLUMN iam.credential_materials.public_material IS '可空；不可变公钥等非秘密结构，代码校验格式；可变使用计数器单独存入 usage_counter。';
+COMMENT ON COLUMN iam.credential_materials.public_material IS '可空；公钥、计数器等非秘密结构，代码校验格式。';
 COMMENT ON COLUMN iam.credential_materials.credential_id_digest IS '可空；Passkey Credential ID 的摘要或安全编码值。';
 COMMENT ON COLUMN iam.credential_materials.algorithm IS '算法标识，必须由代码对照算法 Allowlist。';
 COMMENT ON COLUMN iam.credential_materials.algorithm_parameters IS '算法参数快照，例如成本和盐；禁止存储秘密明文。';
-COMMENT ON COLUMN iam.credential_materials.key_id IS '可空；逻辑引用 iam.cryptographic_keys.id；KMS/HSM 外部引用先登记为密钥元数据，数据库 FK 校验存在性。';
+COMMENT ON COLUMN iam.credential_materials.key_id IS '可空；逻辑引用 iam.cryptographic_keys.id 或外部 KMS Key。';
 COMMENT ON COLUMN iam.credential_materials.material_version IS '同认证器和材料类型内的正整数版本。';
-COMMENT ON COLUMN iam.credential_materials.usage_counter IS '认证器协议要求的非负使用计数器；代码使用 CAS 单调更新，公钥和秘密材料本身不可改写。';
 COMMENT ON COLUMN iam.credential_materials.created_at IS '数据库插入时间。';
 COMMENT ON COLUMN iam.credential_materials.retired_at IS '可空；材料退出使用的业务时间。';
-COMMENT ON COLUMN iam.credential_materials.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
-COMMENT ON COLUMN iam.credential_materials.row_version IS '使用计数器和退役元数据的乐观锁版本。';
 
 CREATE TABLE iam.password_history (
     id uuid PRIMARY KEY,
@@ -166,10 +160,9 @@ CREATE TABLE iam.auth_challenges (
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     row_version bigint NOT NULL DEFAULT 0,
     CONSTRAINT uq_auth_challenge_token UNIQUE (token_hash),
-    CONSTRAINT ck_auth_challenge_attempts CHECK (attempt_count >= 0 AND max_attempts > 0 AND attempt_count <= max_attempts),
+    CONSTRAINT ck_auth_challenge_attempts CHECK (attempt_count >= 0 AND max_attempts > 0),
     CONSTRAINT ck_auth_challenge_version CHECK (row_version >= 0),
-    CONSTRAINT ck_auth_challenge_expiry CHECK (expires_at > created_at),
-    CONSTRAINT ck_auth_challenge_subject_pair CHECK ((subject_type IS NULL) = (subject_id IS NULL))
+    CONSTRAINT ck_auth_challenge_expiry CHECK (expires_at > created_at)
 );
 COMMENT ON TABLE iam.auth_challenges IS '验证码、Magic Link、绑定确认等短时挑战；只保存 Token 摘要，发送和验证策略由 AUTH/MSG 代码执行。';
 COMMENT ON COLUMN iam.auth_challenges.id IS '应用生成的 Challenge UUIDv7。';
@@ -186,7 +179,7 @@ COMMENT ON COLUMN iam.auth_challenges.context IS '挑战上下文；代码白名
 COMMENT ON COLUMN iam.auth_challenges.expires_at IS '挑战过期时间，由代码按策略计算。';
 COMMENT ON COLUMN iam.auth_challenges.consumed_at IS '可空；一次性挑战消费时间。';
 COMMENT ON COLUMN iam.auth_challenges.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.auth_challenges.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.auth_challenges.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.auth_challenges.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.login_transactions (
@@ -224,7 +217,7 @@ COMMENT ON COLUMN iam.login_transactions.context IS '协议上下文；代码按
 COMMENT ON COLUMN iam.login_transactions.expires_at IS '事务过期时间。';
 COMMENT ON COLUMN iam.login_transactions.completed_at IS '可空；事务进入终态时间。';
 COMMENT ON COLUMN iam.login_transactions.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.login_transactions.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.login_transactions.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.login_transactions.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.login_transaction_steps (
@@ -252,7 +245,7 @@ COMMENT ON COLUMN iam.login_transaction_steps.evidence_digest IS '可空；证�
 COMMENT ON COLUMN iam.login_transaction_steps.evidence IS '非秘密证据元数据；不得保存验证码、密码或完整 Token。';
 COMMENT ON COLUMN iam.login_transaction_steps.completed_at IS '可空；步骤完成时间。';
 COMMENT ON COLUMN iam.login_transaction_steps.created_at IS '数据库插入时间。';
-COMMENT ON COLUMN iam.login_transaction_steps.updated_at IS '数据库更新时间；由技术 Trigger 自动刷新。';
+COMMENT ON COLUMN iam.login_transaction_steps.updated_at IS '数据库更新时间；应用显式刷新。';
 COMMENT ON COLUMN iam.login_transaction_steps.row_version IS '乐观锁版本。';
 
 CREATE TABLE iam.authentication_contexts (
