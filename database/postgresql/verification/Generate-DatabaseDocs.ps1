@@ -180,7 +180,7 @@ $logicalRelations = @($logicalRelations | Sort-Object SourceTable, SourceColumn 
 $directRelations = @($logicalRelations | Where-Object { $_.Kind -in @('DIRECT','ARRAY') })
 $polymorphicRelations = @($logicalRelations | Where-Object { $_.Kind -eq 'POLYMORPHIC' })
 
-$requirementPattern = '\b(?:CAP|REQ|INV|API|EVT|AT|SLO|TTL|TERM)-[A-Z0-9]+(?:-[A-Z0-9]+)+\b'
+$requirementPattern = '\b(?:CAP|REQ|INV|API|EVT|AT|SLO|TTL|TERM)-[A-Z0-9]+(?:-[A-Z0-9]+)*-\d{3}\b'
 $requirementIndex = @{}
 foreach ($sourcePath in @($capabilityMapPath, $blueprintPath)) {
     $sourceName = Split-Path -Leaf $sourcePath
@@ -343,7 +343,7 @@ $traceability = [System.Text.StringBuilder]::new()
 [void]$traceability.AppendLine()
 [void]$traceability.AppendLine('> 本文件由 `database/postgresql/verification/Generate-DatabaseDocs.ps1` 从能力地图和蓝图的编号生成，只回答需求可能使用哪些数据库持久化边界。它不是蓝图 §18.4 的正式代码实施与验收矩阵，不声明 Owner、Profile、Phase、具体接口、代码结构或逐条自动化测试绑定。')
 [void]$traceability.AppendLine()
-[void]$traceability.AppendLine("- 数据库覆盖编号总数：$($requirementIds.Count)")
+[void]$traceability.AppendLine("- 已建立持久化边界索引的正式编号总数：$($requirementIds.Count)")
 foreach ($kindGroup in ($requirementIds | Group-Object { ($_ -split '-')[0] } | Sort-Object Name)) {
     [void]$traceability.AppendLine("- $($kindGroup.Name)：$($kindGroup.Count)")
 }
@@ -373,20 +373,26 @@ foreach ($id in $requirementIds) {
 $relationDocument = [System.Text.StringBuilder]::new()
 [void]$relationDocument.AppendLine('# 逻辑关系与非数据库校验清单')
 [void]$relationDocument.AppendLine()
-[void]$relationDocument.AppendLine('> 本文件由 Migration 的 Column Comment 生成，只登记数据库可识别的逻辑引用。在不创建 Foreign Key 的前提下，目标存在性、作用域、生命周期、删除行为和多态解析属于非数据库职责，具体契约见 `docs/代码实施`。')
+[void]$relationDocument.AppendLine('> 本文件由 Migration 的 Column Comment 生成，登记数据库可识别的逻辑引用及可静态推导的必填性。关系类型、租户守卫、删除行为、锁和校验 Owner 必须按 `docs/架构决策/ADR-0001-逻辑关系与外键策略.md` 与命令规格卡完成；未分类关系阻断数据库基线最终冻结。')
 [void]$relationDocument.AppendLine()
 [void]$relationDocument.AppendLine("- 逻辑引用字段：$($logicalRelations.Count)")
 [void]$relationDocument.AppendLine("- 可执行 SQL 孤儿检查：$($directRelations.Count)")
 [void]$relationDocument.AppendLine("- 多态或代码解析引用：$($polymorphicRelations.Count)")
 [void]$relationDocument.AppendLine()
-[void]$relationDocument.AppendLine('| 来源字段 | 类型 | 目标 | 非数据库校验提示 | Comment |')
-[void]$relationDocument.AppendLine('|---|---|---|---|---|')
+[void]$relationDocument.AppendLine('| 来源字段 | 必填 | 解析类型 | 目标 | ADR 关系分类 | Scope/Tenant 守卫 | 删除行为 | 锁与校验 Owner | Comment |')
+[void]$relationDocument.AppendLine('|---|---|---|---|---|---|---|---|---|')
 foreach ($relation in $logicalRelations) {
+    $sourceTableMetadata = $tables | Where-Object { $_.Name -eq $relation.SourceTable } | Select-Object -First 1
+    $sourceColumnMetadata = $sourceTableMetadata.Columns | Where-Object { $_.Name -eq $relation.SourceColumn } | Select-Object -First 1
+    $required = if ($sourceColumnMetadata.Definition -match '(?i)\bNOT\s+NULL\b') { 'YES' } else { 'NO' }
     $target = if ($relation.Kind -eq 'POLYMORPHIC') { '由类型字段或代码注册表解析' } else { "``iam.$($relation.TargetTable).$($relation.TargetColumn)``" }
-    $validation = if ($relation.Kind -eq 'POLYMORPHIC') { '校验类型白名单、目标存在、租户/业务线作用域和生命周期；负向测试未知类型与跨租户引用。' }
-        elseif ($relation.Kind -eq 'ARRAY') { '逐项校验目标存在、作用域和生命周期；写入与删除前运行集合校验。' }
-        else { '写入前校验目标存在、租户/业务线作用域和生命周期；删除或匿名化执行反向引用检查。' }
-    [void]$relationDocument.AppendLine("| ``iam.$($relation.SourceTable).$($relation.SourceColumn)`` | ``$($relation.Kind)`` | $target | $validation | $($relation.Comment.Replace('|','\|')) |")
+    $relationClass = if ($relation.Kind -eq 'POLYMORPHIC') { 'POLYMORPHIC' } else { 'UNCLASSIFIED' }
+    $scopeGuard = if ($relation.Kind -eq 'POLYMORPHIC') { '类型白名单 + 目标作用域 + Tenant/Business Line 一致性' }
+        elseif ($relation.Kind -eq 'ARRAY') { '逐项校验目标作用域与 Tenant/Business Line 一致性' }
+        else { '目标存在 + Tenant/Business Line/Owner 一致性' }
+    $deleteBehavior = 'NO_CASCADE；终态/匿名化/维护清理前反向影响检查'
+    $lockOwner = '进入迭代的命令规格卡必须登记锁/CAS 与唯一校验 Owner'
+    [void]$relationDocument.AppendLine("| ``iam.$($relation.SourceTable).$($relation.SourceColumn)`` | ``$required`` | ``$($relation.Kind)`` | $target | ``$relationClass`` | $scopeGuard | $deleteBehavior | $lockOwner | $($relation.Comment.Replace('|','\|')) |")
 }
 
 $orphanCheck = [System.Text.StringBuilder]::new()
@@ -426,33 +432,35 @@ $report = [System.Text.StringBuilder]::new()
 [void]$report.AppendLine()
 [void]$report.AppendLine('| 检查项 | 结果 |')
 [void]$report.AppendLine('|---|---|')
-[void]$report.AppendLine("| 目标父表 | PASS：$($tables.Count)/113 |")
-[void]$report.AppendLine("| 表 Comment | PASS：缺失 $($missingTableComments.Count) |")
-[void]$report.AppendLine("| 字段 Comment | PASS：缺失 $($missingColumnComments.Count) |")
-[void]$report.AppendLine("| Foreign Key 源码 | PASS：$foreignKeyMatches |")
-[void]$report.AppendLine("| 业务 Trigger 源码 | PASS：$triggerMatches |")
-[void]$report.AppendLine("| 持久化 Routine 源码 | PASS：$routineMatches |")
-[void]$report.AppendLine("| PostgreSQL Enum 源码 | PASS：$enumMatches |")
-[void]$report.AppendLine("| View / Materialized View 源码 | PASS：$viewMatches |")
-[void]$report.AppendLine("| Seed 禁止业务数据目标 | PASS：$forbiddenSeedTargets |")
-[void]$report.AppendLine("| Seed 敏感原文 JSON Key | PASS：$rawSecretSeedKeys |")
-[void]$report.AppendLine("| 数据库需求覆盖编号 | PASS：$($requirementIds.Count)（仅编号与持久化边界索引，不代表代码实施或逐条测试覆盖） |")
-[void]$report.AppendLine("| 业务模型逻辑表映射 | PASS：$($tables.Count)/113 |")
-[void]$report.AppendLine("| 领域持久化范围映射 | PASS：$($tables.Count)/113 |")
-[void]$report.AppendLine("| 多领域复用表权威映射 | PASS：$($sharedTables.Count)/$($sharedTables.Count) |")
-[void]$report.AppendLine("| 逻辑引用字段 | PASS：$($logicalRelations.Count) |")
-[void]$report.AppendLine("| 可执行孤儿检查 | PASS：$($directRelations.Count) |")
-[void]$report.AppendLine("| 多态代码校验关系 | PASS：$($polymorphicRelations.Count) |")
-[void]$report.AppendLine("| 分区父表定义 | PASS：$(@($tables | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Partition) }).Count)/13 |")
+[void]$report.AppendLine("| 目标父表 | STATIC_PASS：$($tables.Count)/113 |")
+[void]$report.AppendLine("| 表 Comment | STATIC_PASS：缺失 $($missingTableComments.Count) |")
+[void]$report.AppendLine("| 字段 Comment | STATIC_PASS：缺失 $($missingColumnComments.Count) |")
+[void]$report.AppendLine("| Foreign Key 源码 | STATIC_PASS：$foreignKeyMatches |")
+[void]$report.AppendLine("| 业务 Trigger 源码 | STATIC_PASS：$triggerMatches |")
+[void]$report.AppendLine("| 持久化 Routine 源码 | STATIC_PASS：$routineMatches |")
+[void]$report.AppendLine("| PostgreSQL Enum 源码 | STATIC_PASS：$enumMatches |")
+[void]$report.AppendLine("| View / Materialized View 源码 | STATIC_PASS：$viewMatches |")
+[void]$report.AppendLine("| Seed 禁止业务数据目标 | STATIC_PASS：$forbiddenSeedTargets |")
+[void]$report.AppendLine("| Seed 敏感原文 JSON Key | STATIC_PASS：$rawSecretSeedKeys |")
+[void]$report.AppendLine("| 正式编号持久化索引 | STATIC_INDEXED：$($requirementIds.Count)（不代表代码实施或逐条测试覆盖） |")
+[void]$report.AppendLine("| 业务模型逻辑表映射 | STATIC_PASS：$($tables.Count)/113 |")
+[void]$report.AppendLine("| 领域持久化范围映射 | STATIC_PASS：$($tables.Count)/113 |")
+[void]$report.AppendLine("| 多领域复用表权威映射 | STATIC_PASS：$($sharedTables.Count)/$($sharedTables.Count) |")
+[void]$report.AppendLine("| 逻辑引用字段 | STATIC_INDEXED：$($logicalRelations.Count) |")
+[void]$report.AppendLine("| 可执行孤儿检查 | STATIC_GENERATED：$($directRelations.Count) |")
+[void]$report.AppendLine("| 多态代码校验关系 | STATIC_INDEXED：$($polymorphicRelations.Count) |")
+[void]$report.AppendLine("| ADR-0001 逐关系分类 | OPEN：$($directRelations.Count) 个非多态关系仍须分类并评审 FK 适用性 |")
+[void]$report.AppendLine("| 分区父表定义 | STATIC_PASS：$(@($tables | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Partition) }).Count)/13 |")
 [void]$report.AppendLine('| PostgreSQL 实际执行 | 未验证：当前工作区未发现 `psql` 或容器运行时 |')
 
 New-Item -ItemType Directory -Force -Path $outputPath | Out-Null
 $utf8 = [System.Text.UTF8Encoding]::new($false)
-[System.IO.File]::WriteAllText((Join-Path $outputPath '数据字典.md'), $dictionary.ToString(), $utf8)
-[System.IO.File]::WriteAllText((Join-Path $outputPath '表字段索引清单.md'), $inventory.ToString(), $utf8)
-[System.IO.File]::WriteAllText((Join-Path $outputPath '数据库对象检查报告.md'), $report.ToString(), $utf8)
-[System.IO.File]::WriteAllText($traceabilityPath, $traceability.ToString(), $utf8)
-[System.IO.File]::WriteAllText($logicalRelationPath, $relationDocument.ToString(), $utf8)
-[System.IO.File]::WriteAllText((Join-Path $verificationPath '006_logical_relation_orphan_check.sql'), $orphanCheck.ToString(), $utf8)
+$finalNewLine = [Environment]::NewLine
+[System.IO.File]::WriteAllText((Join-Path $outputPath '数据字典.md'), $dictionary.ToString().TrimEnd() + $finalNewLine, $utf8)
+[System.IO.File]::WriteAllText((Join-Path $outputPath '表字段索引清单.md'), $inventory.ToString().TrimEnd() + $finalNewLine, $utf8)
+[System.IO.File]::WriteAllText((Join-Path $outputPath '数据库对象检查报告.md'), $report.ToString().TrimEnd() + $finalNewLine, $utf8)
+[System.IO.File]::WriteAllText($traceabilityPath, $traceability.ToString().TrimEnd() + $finalNewLine, $utf8)
+[System.IO.File]::WriteAllText($logicalRelationPath, $relationDocument.ToString().TrimEnd() + $finalNewLine, $utf8)
+[System.IO.File]::WriteAllText((Join-Path $verificationPath '006_logical_relation_orphan_check.sql'), $orphanCheck.ToString().TrimEnd() + $finalNewLine, $utf8)
 
 Write-Output "Generated: $($tables.Count) tables; $($indexMatches.Count) indexes; $($constraintMatches.Count) constraints; $($requirementIds.Count) database coverage IDs; $($directRelations.Count) executable relations."

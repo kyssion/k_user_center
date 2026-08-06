@@ -1,0 +1,36 @@
+state_machine,state_field,owner_domain,initial_state,terminal_states,transition_source,phase,notes
+UserLifecycle,lifecycle_state,ID,PROVISIONAL,ANONYMIZED;ERASED;MERGED,统一身份与访问平台建设与验收蓝图.md#71-状态转换,1a,DELETION_BLOCKED 解除后恢复原 Operation；终态不可恢复
+AuthenticationLock,authentication_lock_state,AUTH,ENABLED,,统一身份与访问平台建设与验收蓝图.md#71-状态转换,1a,ENABLED 与 LOCKED 正交于生命周期和安全冻结
+SecurityFreeze,security_freeze_state,ID,CLEAR,,统一身份与访问平台建设与验收蓝图.md#71-状态转换,1a,CLEAR 与 FROZEN；解冻不得清除认证锁定
+Identifier,verification_state,ID,PENDING,RELEASED,统一身份与访问平台建设与验收蓝图.md#71-状态转换,1a,PENDING→VERIFIED→UNBOUND→QUARANTINED→RELEASED；用户名默认不释放
+Authenticator,state,AUTH,PENDING,EXPIRED;COMPROMISED;REVOKED;REPLACED,统一身份与访问平台建设与验收蓝图.md#81-认证器状态,1b,ACTIVE 可进入 SUSPENDED 或 LOCKED；终态不得重新激活
+LoginTransaction,state,AUTH,CREATED,COMPLETED;EXPIRED;ABANDONED;BLOCKED,统一身份与访问平台建设与验收蓝图.md#81-认证器状态,1a,需要 Consent 时必须经过 PENDING_CONSENT
+Challenge,state,AUTH,ISSUED,CONSUMED;EXPIRED;LOCKED;CANCELLED,统一身份与访问平台建设与验收蓝图.md#81-认证器状态,1a,VERIFIED 不是业务操作完成；提交时原子消费
+Session,state,SESSION,ACTIVE,EXPIRED;REVOKED,统一身份与访问平台建设与验收蓝图.md#91-对象与状态,1a,COMPROMISED 必须继续进入 REVOKED
+Grant,state,OAP,PENDING,DENIED;REVOKED;EXPIRED,统一身份与访问平台建设与验收蓝图.md#91-对象与状态,1a,PENDING 不得签发 Token
+AuthorizationCode,state,OAP,ISSUED,CONSUMED;EXPIRED;REVOKED,统一身份与访问平台建设与验收蓝图.md#91-对象与状态,1a,单次消费并绑定 Client、Redirect 与 PKCE
+TokenFamily,state,OAP,ACTIVE,COMPROMISED;REVOKED;EXPIRED,统一身份与访问平台建设与验收蓝图.md#91-对象与状态,1a,恶意重放触发家族级失陷与撤销
+RefreshTokenInstance,state,OAP,CURRENT,USED;REVOKED;EXPIRED,统一身份与访问平台建设与验收蓝图.md#91-对象与状态,1a,每个 Family 最多一个 CURRENT
+DeviceLifecycle,lifecycle_state,SESSION,REGISTERED,RETIRED;REVOKED,统一身份与访问平台建设与验收蓝图.md#91-对象与状态,1b,独立于会话、可信和挂失维度
+DeviceTrust,trust_state,SESSION,UNTRUSTED,,统一身份与访问平台建设与验收蓝图.md#91-对象与状态,1b,UNTRUSTED 与 TRUSTED；解除挂失不自动恢复 TRUSTED
+DeviceLoss,loss_state,SESSION,CLEAR,,统一身份与访问平台建设与验收蓝图.md#91-对象与状态,1b,CLEAR 与 LOST；进入 LOST 原子触发撤销
+Membership,state,TENANT,INVITED,REJECTED;EXPIRED;LEFT,统一身份与访问平台建设与验收蓝图.md#101-状态,1a,终态后重新加入必须创建新 Membership
+Invitation,state,TENANT,PENDING,ACCEPTED;REJECTED;EXPIRED;REVOKED,统一身份与访问平台建设与验收蓝图.md#101-状态,1a,单次消费并重新校验邀请人权限和角色上界
+Tenant,state,TENANT,PROVISIONING,CLOSED,统一身份与访问平台建设与验收蓝图.md#101-状态,3,CLOSING 仅可在不可逆边界前撤回到 ACTIVE
+BusinessLine,state,TENANT,PROVISIONING,CLOSED,统一身份与访问平台建设与验收蓝图.md#101-状态,1a,暂停或关闭前必须处置下属 Tenant
+Organization,state,TENANT,ACTIVE,CLOSED,统一身份与访问平台建设与验收蓝图.md#101-状态,3,关闭前处置子组织和有效 Membership
+Consent,state,PRIV,PENDING,DENIED;WITHDRAWN;EXPIRED;SUPERSEDED,统一身份与访问平台建设与验收蓝图.md#111-状态,2,PENDING 不构成处理依据
+PrivacyRequest,state,PRIV,SUBMITTED,COMPLETED;REJECTED,统一身份与访问平台建设与验收蓝图.md#111-状态,2,BLOCKED 与 PARTIAL 均不等于完成
+Client,state,OAP,DRAFT,RETIRED,统一身份与访问平台建设与验收蓝图.md#131-状态,1a,COMPROMISED 不得原地恢复
+MachinePrincipal,state,MACHINE,PROVISIONING,RETIRED,统一身份与访问平台建设与验收蓝图.md#131-状态,1b,暂停恢复重新验证全部激活条件
+MachineCredential,state,MACHINE,PENDING,EXPIRED;REVOKED;COMPROMISED,统一身份与访问平台建设与验收蓝图.md#131-状态,1b,替代链不可变；失陷凭证不得恢复
+TrustBundle,state,MACHINE,DRAFT,RETIRED;REVOKED,统一身份与访问平台建设与验收蓝图.md#131-状态,1b,回滚创建新版本而非反向改写
+Attestation,state,MACHINE,ATTESTATION_RECEIVED,EXPIRED;REVOKED;REJECTED,统一身份与访问平台建设与验收蓝图.md#131-状态,1b,每次证明和短期凭证签发均为独立实例
+Delegation,state,ASR,PENDING,REJECTED;REVOKED;EXPIRED,统一身份与访问平台建设与验收蓝图.md#134-自然人委托与高风险审批,3,不得扩权且 Token 与审计保留 Actor/Subject
+ApprovalCase,state,CTRL,DRAFT,EXECUTED;REJECTED;CANCELLED;EXPIRED,统一身份与访问平台建设与验收蓝图.md#134-自然人委托与高风险审批,1b,审批绑定摘要和资源版本且仅执行一次
+ConfigurationRelease,state,CTRL,DRAFT,DEPRECATED;REVOKED,统一身份与访问平台建设与验收蓝图.md#151-控制面,1b,回滚创建新的不可变 Release
+CryptographicKey,state,KEY,GENERATED,DESTROYED;REVOKED,统一身份与访问平台建设与验收蓝图.md#151-控制面,1a,失陷进入 COMPROMISED 后 REVOKED
+Certificate,state,KEY,ISSUED,EXPIRED;REVOKED,统一身份与访问平台建设与验收蓝图.md#151-控制面,1a,GRACE 只用于受控验证重叠窗口
+JwksRelease,state,KEY,DRAFT,SUPERSEDED;REVOKED,统一身份与访问平台建设与验收蓝图.md#151-控制面,1a,PUBLISHED 到 ACTIVE 前满足传播窗口
+Operation,state,OPS,PENDING,COMPLETED;FAILED;CANCELLED,统一身份与访问平台建设与验收蓝图.md#53-异步-operation-契约,1a,BLOCKED 与 PARTIAL 可从检查点继续
+MigrationBatch,state,FED,DISCOVERED,COMPLETE;ROLLED_BACK,统一身份与访问平台建设与验收蓝图.md#17-迁移灰度与回滚,2,越过不可逆边界后只允许前向修复

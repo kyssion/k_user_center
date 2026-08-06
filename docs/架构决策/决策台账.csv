@@ -1,0 +1,16 @@
+decision_id,topic,status,baseline,owner_role,deadline,evidence_uri,blocking_scope
+DEC-001,用户判同,FROZEN,禁止仅按手机号邮箱或姓名自动判同,身份平台负责人,,,数据模型
+DEC-002,外部身份唯一键,FROZEN,OIDC 使用 issuer+sub；SAML 使用完整限定元组,身份平台负责人,,,联合登录
+DEC-003,Subject 发布,FROZEN,默认应用级 pairwise Subject,身份平台负责人,,,Client 接入
+DEC-004,手机号邮箱唯一性,FROZEN,规范化后全局唯一；例外使用单独 Profile,身份平台负责人,,,数据模型
+DEC-005,业务封禁范围,FROZEN,只影响目标 Membership,身份平台负责人,,,状态机
+DEC-006,账号冻结范围,FROZEN,阻止新认证刷新和高风险访问,安全负责人,,,会话
+DEC-007,IAL-AAL-FAL 映射,OPEN,采用三维保证等级；具体映射待阶段0批准,安全负责人,阶段0出口,,认证接口
+DEC-008,人类用户登录流程,FROZEN,Authorization Code+PKCE S256；输入受限设备才允许 Device Grant,身份协议负责人,,,协议
+DEC-009,机器身份,FROZEN,短期凭证优先且禁止共享人类账号,平台身份负责人,,,生产服务接入
+DEC-010,权限边界,FROZEN,平台管理通用授权语义；业务保留业务事实,授权负责人,,,授权设计
+DEC-011,退出传播数值,OPEN,原则冻结；具体 SLO 和 Client 责任待批准,会话负责人,阶段0出口,,SDK 与接入
+DEC-012,数据删除与保留,OPEN,原则冻结；地区与保留周期待法务批准,隐私负责人,阶段0出口,,隐私评审
+DEC-013,标识可检索加密,FROZEN,随机化密文加 HMAC 盲索引且禁止模糊检索,安全负责人,,,数据模型
+DEC-014,算法与密码合规,OPEN,按运营地区确定等保密评算法和密码模块形态,安全与法务负责人,阶段0数据模型冻结,,密码与协议
+DEC-015,RTO-RPO 与跨区域形态,OPEN,默认 SLO 基线已登记；部署形态与更严格目标待批准,SRE负责人,阶段0出口,,架构评审

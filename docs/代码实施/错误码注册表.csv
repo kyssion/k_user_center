@@ -1,0 +1,23 @@
+kind,code,http_status,scope,retryable,exposable,description,compatibility
+error,INVALID_REQUEST,400,management_domain_api,false,true,请求无法解析、缺少协议必填字段或基础格式错误,stable
+error,AUTHENTICATION_REQUIRED,401,management_domain_api,false,true,缺少有效认证,stable
+error,ACCESS_DENIED,403,management_domain_api,false,true,调用者已认证但没有目标操作权限,stable
+error,STEP_UP_REQUIRED,403,management_domain_api,false,true,保证等级或认证新鲜度不足,stable
+error,APPROVAL_FORBIDDEN,403,management_domain_api,false,true,自审、越权审批或职责冲突,stable
+error,IDENTITY_ALREADY_BOUND,409,management_domain_api,false,true,唯一标识或外部身份已被占用且不得披露占用主体,stable
+error,IDEMPOTENCY_KEY_REUSED,409,management_domain_api,false,true,相同幂等键被用于不同规范化请求摘要,stable
+error,INVALID_STATE_TRANSITION,409,management_domain_api,false,true,当前资源状态不允许执行该命令,stable
+error,VERSION_MISMATCH,412,management_domain_api,false,true,expected_version 或 If-Match 与当前版本不一致,stable
+error,INVALID_ARGUMENT,422,management_domain_api,false,true,请求可解析但字段、Schema、Allowlist 或业务参数语义非法,stable
+error,INVALID_REFERENCE,422,management_domain_api,false,conditional,逻辑引用不存在或类型不符合命令契约；防枚举场景可以映射为 404,stable
+error,MERGE_CONFLICT,422,management_domain_api,false,true,账号合并存在不可自动处理的冲突,stable
+error,SUBJECT_FROZEN,423,authenticated_authorized_context,false,conditional,已认证且有权获知的主体被冻结；预认证端点禁止返回,stable
+error,RATE_LIMITED,429,management_domain_api,true,true,调用频率或配额超限并携带 Retry-After,stable
+error,DEPENDENCY_UNAVAILABLE,503,management_domain_api,true,true,非授权依赖暂时不可用且仅允许幂等重试,stable
+error,AUTHZ_UNAVAILABLE,503,management_domain_api,true,true,授权结论无法确定；高风险操作失败关闭,stable
+error,INTERNAL_CONSTRAINT_VIOLATION,500,internal_only,false,false,数据库基础约束失败且无法映射为稳定领域冲突,stable
+reason,REVIEW_PENDING,,operation,false,true,操作等待人工审核,stable
+reason,RESULT_UNKNOWN,,operation,true,true,请求超时或依赖中断后结果未知；使用原幂等键查询或重试,stable
+reason,MANUAL_INTERVENTION_REQUIRED,,operation,false,true,自动补偿或继续不安全，需要人工接管,stable
+reason,LEGAL_HOLD,,operation,false,true,法律保留阻断对应数据处理步骤,stable
+reason,DEPENDENCY_BLOCKED,,operation,true,true,外部依赖或下游系统阻断当前步骤,stable

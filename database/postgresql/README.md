@@ -18,7 +18,7 @@
 - 全部业务对象位于 `iam` Schema；`iam_meta` 只保存 Migration 技术账本，不属于 113 张业务表。
 - Migration 文件名必须为唯一的 `NNN_name.sql`，且脚本内不得自行 `BEGIN/COMMIT/ROLLBACK`；Runner 将单个脚本及其账本登记放在同一事务中，已登记版本的脚本被修改、改名或从仓库移除时立即失败。
 - 已有环境若已经执行 Migration 但没有 `iam_meta.schema_migrations` 账本，必须通过单独评审的基线登记变更接管，禁止 Runner 自动推断或静默认领历史。
-- 不创建 Foreign Key、业务 Trigger、持久化业务 Routine、PostgreSQL Enum 或业务 View。
+- 当前候选 SQL 不创建 Foreign Key、业务 Trigger、持久化业务 Routine、PostgreSQL Enum 或业务 View；Foreign Key 最终策略按 [`docs/架构决策/ADR-0001-逻辑关系与外键策略.md`](../../docs/架构决策/ADR-0001-逻辑关系与外键策略.md) 完成逐关系分类后冻结。
 - `*_id` 为逻辑引用，目标、作用域、状态和删除行为由代码校验。
 - 每张逻辑表必须映射到一个主要业务模型和权威域；多领域复用遵守 `docs/database/业务模型与持久化边界清单.md` 的共享写入边界，不得形成影子状态或未声明双写。
 - 数据库角色只做部署身份和敏感存储的粗粒度隔离，不映射最终用户、管理员角色、租户、数据范围、领域 Owner 或业务状态。
