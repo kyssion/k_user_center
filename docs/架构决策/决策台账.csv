@@ -15,3 +15,5 @@ DEC-013,标识可检索加密,FROZEN,随机化密文加 HMAC 盲索引且禁止�
 DEC-014,算法与密码合规,OPEN,按运营地区确定等保密评算法和密码模块形态,安全与法务负责人,阶段0数据模型冻结,,密码与协议
 DEC-015,RTO-RPO 与跨区域形态,OPEN,默认 SLO 基线已登记；部署形态与更严格目标待批准,SRE负责人,阶段0出口,,架构评审
 DEC-016,工程与数据访问技术栈,FROZEN,.NET 10 模块化单体 + SqlSugar + PostgreSQL；SQL Migration 为 Schema 权威,架构负责人,,docs/架构决策/架构决策记录.md#adr-0003,阶段0工程骨架
+DEC-017,授权服务器选型,FROZEN,ADR-0004 批准 OpenIddict 内嵌 + 自定义 Store 落自有 iam Schema；back-channel 登出经 Outbox 投影补齐，front-channel 移除；运行时逐项验证仍为实施前必过门禁,身份协议负责人,,docs/架构决策/架构决策记录.md#adr-0004,协议与 Token 实现
+DEC-018,依赖组件选型,OPEN,ADR-0005 推荐 Redis 唯一缓存、Outbox 进程内 relay（阶段1不引入外部 MQ）、托管 KMS 端口化、Redis+信封加密短期秘密存储、OpenTelemetry/OTLP；各域含本地替代方案；待架构与 SRE 负责人批准,架构负责人,阶段0出口,docs/架构决策/架构决策记录.md#adr-0005,一键本地环境与阶段1基础设施
