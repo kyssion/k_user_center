@@ -1,0 +1,17 @@
+<Project>
+
+  <!-- 解决方案级构建基线：对所有解决方案与项目生效，见 docs/代码实施/阶段0实施状态.md §6.1 -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <Deterministic>true</Deterministic>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <!-- locked mode 由 CI 与 locked mode 参数启用；本地升级包完成评审后重新生成锁文件 -->
+  </PropertyGroup>
+
+</Project>

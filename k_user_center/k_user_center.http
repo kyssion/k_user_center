@@ -1,6 +1,7 @@
-@k_user_center_HostAddress = http://localhost:5224
+@host = http://localhost:5100
 
-GET {{k_user_center_HostAddress}}/weatherforecast/
-Accept: application/json
+### 存活探针
+GET {{host}}/health/live
 
-###
+### 就绪探针
+GET {{host}}/health/ready

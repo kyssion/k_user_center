@@ -16,6 +16,7 @@ error,RATE_LIMITED,429,management_domain_api,true,true,调用频率或配额超�
 error,DEPENDENCY_UNAVAILABLE,503,management_domain_api,true,true,非授权依赖暂时不可用且仅允许幂等重试,stable
 error,AUTHZ_UNAVAILABLE,503,management_domain_api,true,true,授权结论无法确定；高风险操作失败关闭,stable
 error,INTERNAL_CONSTRAINT_VIOLATION,500,internal_only,false,false,数据库基础约束失败且无法映射为稳定领域冲突,stable
+error,INTERNAL_ERROR,500,internal_only,false,false,未预期内部错误；对外仅暴露稳定错误码，不暴露堆栈与内部细节,stable
 reason,REVIEW_PENDING,,operation,false,true,操作等待人工审核,stable
 reason,RESULT_UNKNOWN,,operation,true,true,请求超时或依赖中断后结果未知；使用原幂等键查询或重试,stable
 reason,MANUAL_INTERVENTION_REQUIRED,,operation,false,true,自动补偿或继续不安全，需要人工接管,stable

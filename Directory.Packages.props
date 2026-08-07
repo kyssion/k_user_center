@@ -1,0 +1,27 @@
+<Project>
+
+  <!-- 集中包管理：版本保持最新稳定版，升级须人工评审，见 docs/代码实施/阶段0实施状态.md §6.1 -->
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 生产依赖 -->
+    <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="10.0.10" />
+    <PackageVersion Include="SqlSugarCoreNoDrive" Version="5.1.4.216" />
+    <PackageVersion Include="Npgsql" Version="10.0.3" />
+    <!-- 传递依赖按最新稳定版管理，不直接引用 -->
+    <PackageVersion Include="Newtonsoft.Json" Version="13.0.4" />
+    <!-- 传递钉住：修复 GHSA-v5pm-xwqc-g5wc；不升 3.x 以兼容 ASP.NET Core OpenAPI 10.x，已人工评审 -->
+    <PackageVersion Include="Microsoft.OpenApi" Version="2.11.0" />
+    <!-- 测试依赖 -->
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
+    <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.10" />
+    <PackageVersion Include="coverlet.collector" Version="10.0.1" />
+    <PackageVersion Include="NetArchTest.Rules" Version="1.3.2" />
+  </ItemGroup>
+
+</Project>

@@ -1,48 +1,32 @@
-namespace k_user_center;
+using KUserCenter.Common.Time;
+using KUserCenter.Middleware;
+using KUserCenter.Repositories;
 
-public class Program
+var builder = WebApplication.CreateBuilder(args);
+
+// 可信时钟：业务代码经 ISystemClock 获取 UTC 时间，禁止直接使用系统时钟
+builder.Services.AddSingleton<ISystemClock, SystemClock>();
+
+// 持久化基座：连接串只从环境变量/User Secrets 注入；Host liveness 不依赖 PostgreSQL
+builder.Services.AddSqlSugarPersistence(builder.Configuration);
+
+builder.Services.AddHealthChecks();
+builder.Services.AddOpenApi();
+
+var app = builder.Build();
+
+app.UseMiddleware<ExceptionHandlingMiddleware>();
+
+if (app.Environment.IsDevelopment())
 {
-    public static void Main(string[] args)
-    {
-        var builder = WebApplication.CreateBuilder(args);
-
-        // Add services to the container.
-        builder.Services.AddAuthorization();
-
-        // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
-        builder.Services.AddOpenApi();
-
-        var app = builder.Build();
-
-        // Configure the HTTP request pipeline.
-        if (app.Environment.IsDevelopment())
-        {
-            app.MapOpenApi();
-        }
-
-        app.UseHttpsRedirection();
-
-        app.UseAuthorization();
-
-        var summaries = new[]
-        {
-            "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-        };
-
-        app.MapGet("/weatherforecast", (HttpContext httpContext) =>
-            {
-                var forecast = Enumerable.Range(1, 5).Select(index =>
-                        new WeatherForecast
-                        {
-                            Date = DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-                            TemperatureC = Random.Shared.Next(-20, 55),
-                            Summary = summaries[Random.Shared.Next(summaries.Length)]
-                        })
-                    .ToArray();
-                return forecast;
-            })
-            .WithName("GetWeatherForecast");
-
-        app.Run();
-    }
+    app.MapOpenApi();
 }
+
+// 阶段 0 首批健康检查：live 不访问任何依赖；ready 暂为进程级就绪
+app.MapHealthChecks("/health/live");
+app.MapHealthChecks("/health/ready");
+
+app.Run();
+
+/// <summary>供集成测试（WebApplicationFactory）引用的程序入口标记。</summary>
+public partial class Program;
