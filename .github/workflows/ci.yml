@@ -1,0 +1,66 @@
+# R0-010 门禁：构建、单元测试、数据库/文档契约、协议一致性占位、敏感信息扫描、矩阵校验进入 CI。
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: 构建与单元测试门禁
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: k_user_center
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 .NET SDK（仓库根 global.json 管控版本）
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: 还原（locked mode）
+        run: dotnet restore --locked-mode
+
+      - name: 构建（Release）
+        run: dotnet build -c Release --no-restore
+
+      - name: 单元测试
+        run: dotnet test -c Release --no-build --no-restore
+
+      - name: 代码格式校验
+        run: dotnet format k_user_center.sln --verify-no-changes --no-restore
+
+  contracts:
+    name: 文档契约与矩阵校验门禁
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 数据库与文档契约校验
+        run: pwsh -File docs/代码实施/Validate-DocumentationContracts.ps1
+
+      - name: 实施追踪矩阵引用校验
+        run: pwsh -File ci/Validate-TrackingMatrix.ps1
+
+      - name: 协议一致性占位检查
+        run: pwsh -File ci/Check-ProtocolConformance.ps1
+
+  secrets-scan:
+    name: 敏感信息扫描门禁
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Gitleaks 全历史扫描
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
