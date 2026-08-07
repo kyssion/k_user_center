@@ -7,9 +7,7 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.9"/>
-        <!-- 这个后面需要升级一下 这里只是暂时的升级处理 安全漏洞-->
-        <PackageReference Include="Microsoft.OpenApi" Version="3.9.0" />
+        <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.10" />
     </ItemGroup>
 
 </Project>
