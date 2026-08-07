@@ -17,3 +17,4 @@ DEC-015,RTO-RPO 与跨区域形态,OPEN,默认 SLO 基线已登记；部署形�
 DEC-016,工程与数据访问技术栈,FROZEN,.NET 10 模块化单体 + SqlSugar + PostgreSQL；SQL Migration 为 Schema 权威,架构负责人,,docs/架构决策/架构决策记录.md#adr-0003,阶段0工程骨架
 DEC-017,授权服务器选型,FROZEN,ADR-0004 批准 OpenIddict 内嵌 + 自定义 Store 落自有 iam Schema；back-channel 登出经 Outbox 投影补齐，front-channel 移除；运行时逐项验证仍为实施前必过门禁,身份协议负责人,,docs/架构决策/架构决策记录.md#adr-0004,协议与 Token 实现
 DEC-018,依赖组件选型,OPEN,ADR-0005 推荐 Redis 唯一缓存、Outbox 进程内 relay（阶段1不引入外部 MQ）、托管 KMS 端口化、Redis+信封加密短期秘密存储、OpenTelemetry/OTLP；各域含本地替代方案；待架构与 SRE 负责人批准,架构负责人,阶段0出口,docs/架构决策/架构决策记录.md#adr-0005,一键本地环境与阶段1基础设施
+DEC-019,GitHub CI 下线,FROZEN,不引入 GitHub Actions CI，`.github/workflows/ci.yml` 已删除；构建/测试/契约/矩阵门禁改为本地脚本执行（四件套 + `ci/` 校验脚本），敏感信息扫描待重新引入 CI 或等效通道时补齐,项目负责人,,,门禁执行方式
